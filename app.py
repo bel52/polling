@@ -38,11 +38,37 @@ def init_db():
                         question TEXT NOT NULL,
                         options TEXT NOT NULL -- JSON string of options
                     )''')
+        # Create votes table
+        c.execute('''CREATE TABLE IF NOT EXISTS votes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        option_id INTEGER NOT NULL,
+                        student_name TEXT NOT NULL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(option_id) REFERENCES options(id)
+                    )''')
+        conn.commit()
+        conn.close()
+    else:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        # Check if the votes table exists, and create it if it doesn't
+        c.execute('''CREATE TABLE IF NOT EXISTS votes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        option_id INTEGER NOT NULL,
+                        student_name TEXT NOT NULL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(option_id) REFERENCES options(id)
+                    )''')
         conn.commit()
         conn.close()
 
 # Initialize database
 init_db()
+
+@app.route('/init_db', methods=['GET'])
+def initialize_db():
+    init_db()
+    return jsonify({"success": True}), 200
 
 @app.route('/')
 def index():
@@ -92,10 +118,31 @@ def create_poll():
 
     return jsonify({"success": True}), 200
 
+@app.route('/votes_with_names', methods=['GET'])
+def votes_with_names():
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("""
+            SELECT v.student_name, o.option, v.timestamp
+            FROM votes v
+            JOIN options o ON v.option_id = o.id
+            ORDER BY v.timestamp DESC
+        """)
+        votes = [{"student_name": row[0], "option": row[1], "timestamp": row[2]} for row in c.fetchall()]
+        conn.close()
+        return jsonify(votes), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/vote', methods=['POST'])
 def vote():
     data = request.json
     option_id = data.get('option_id')
+    student_name = data.get('student_name')
+
+    if not student_name:
+        return jsonify({"error": "Student name is required"}), 400
 
     try:
         conn = sqlite3.connect('poll.db')
@@ -122,6 +169,9 @@ def vote():
         # Increment vote count
         c.execute("UPDATE options SET votes = votes + 1 WHERE id = ?", (option_id,))
 
+        # Store the student's vote
+        c.execute("INSERT INTO votes (option_id, student_name) VALUES (?, ?)", (option_id, student_name))
+
         # Fetch updated results
         c.execute("""
             SELECT id, option, votes 
@@ -133,8 +183,8 @@ def vote():
         conn.commit()
         conn.close()
 
-        # Emit the results to all clients
-        socketio.emit('update_results', {"results": results})
+        # Emit the results to all clients, including the voter's name
+        socketio.emit('update_results', {"results": results, "voter": student_name})
 
         return jsonify({"success": True}), 200
     except Exception as e:
@@ -206,7 +256,6 @@ def create_staged_poll():
     except Exception as e:
         print(f"Error staging poll: {e}")  # Debugging statement
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/staged_polls', methods=['GET'])
 def get_staged_polls():
@@ -313,3 +362,33 @@ def delete_staged_poll(poll_id):
 if __name__ == '__main__':
     # Make sure to use `socketio.run` instead of `app.run`
     socketio.run(app, host='0.0.0.0', port=5000)
+
+@app.route('/clear_poll', methods=['POST'])
+def clear_poll():
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+
+        # Archive the current poll
+        c.execute("SELECT * FROM questions ORDER BY id DESC LIMIT 1")
+        current_poll = c.fetchone()
+        if current_poll:
+            # Get options and votes for the current poll
+            c.execute("SELECT option, votes FROM options WHERE question_id = ?", (current_poll[0],))
+            current_options = [{"option": row[0], "votes": row[1]} for row in c.fetchall()]
+            # Archive the poll
+            c.execute("INSERT INTO archived_polls (question, options) VALUES (?, ?)", 
+                      (current_poll[1], json.dumps(current_options)))
+            # Remove the current poll
+            c.execute("DELETE FROM questions WHERE id = ?", (current_poll[0],))
+            c.execute("DELETE FROM options WHERE question_id = ?", (current_poll[0],))
+
+        conn.commit()
+        conn.close()
+
+        # Emit an event to notify clients that the poll has been cleared
+        socketio.emit('update_results', {"results": [], "voter": None})
+
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

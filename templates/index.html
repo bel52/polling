@@ -79,22 +79,33 @@
             height: 100%;
             border-radius: 5px;
         }
+
+        img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+        }
     </style>
     <script>
         const socket = io();
 
-async function loadPoll() {
-    const response = await fetch('/current_poll');
-    if (response.ok) {
-        const data = await response.json();
-        displayPoll(data);
-    } else {
-        document.getElementById('poll').innerHTML = '<p>No active poll.</p>';
-        document.getElementById('results').innerHTML = '';
-    }
-    // Hide the loading spinner after the poll is loaded
-    document.getElementById('loading-spinner').style.display = 'none';
-}
+        async function loadPoll() {
+            const response = await fetch('/current_poll');
+            if (response.ok) {
+                const data = await response.json();
+                if (data.question) {
+                    displayPoll(data);
+                } else {
+                    showPlaceholder();
+                }
+            } else {
+                showPlaceholder();
+            }
+            // Hide the loading spinner after the poll is loaded
+            document.getElementById('loading-spinner').style.display = 'none';
+        }
+
         function displayPoll(data) {
             const pollContainer = document.getElementById('poll');
             pollContainer.innerHTML = `
@@ -106,77 +117,120 @@ async function loadPoll() {
 
             updateResults(data.options);
         }
-async function vote(optionId) {
-    // Disable all buttons after voting
-    const buttons = document.querySelectorAll('button');
-    buttons.forEach(button => button.disabled = true);
 
-    // Show loading spinner
-    document.getElementById('loading-spinner').style.display = 'block';
+        async function vote(optionId) {
+            const name = localStorage.getItem('studentName');
+            if (!name) {
+                alert('Please enter your name.');
+                return;
+            }
 
-    try {
-        const response = await fetch('/vote', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ option_id: optionId })
-        });
+            // Disable all buttons after voting
+            const buttons = document.querySelectorAll('button');
+            buttons.forEach(button => button.disabled = true);
 
-        if (response.ok) {
-            alert('Vote submitted!');
-        } else {
-            const result = await response.json();
-            if (result.error.includes("Stale poll")) {
-                alert(result.error);
-                location.reload(); // Refresh the page to show the current poll
-            } else {
-                alert('Error submitting vote: ' + result.error);
+            // Show loading spinner
+            document.getElementById('loading-spinner').style.display = 'block';
+
+            try {
+                const response = await fetch('/vote', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ option_id: optionId, student_name: name })
+                });
+
+                if (response.ok) {
+                    alert('Vote submitted!');
+                } else {
+                    const result = await response.json();
+                    if (result.error.includes("Stale poll")) {
+                        alert(result.error);
+                        location.reload(); // Refresh the page to show the current poll
+                    } else {
+                        alert('Error submitting vote: ' + result.error);
+                    }
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Network error while submitting vote.');
+            } finally {
+                // Hide loading spinner after the process is done
+                document.getElementById('loading-spinner').style.display = 'none';
+                // Do not re-enable buttons to prevent multiple votes
             }
         }
-    } catch (err) {
-        console.error(err);
-        alert('Network error while submitting vote.');
-    } finally {
-        // Hide loading spinner after the process is done
-        document.getElementById('loading-spinner').style.display = 'none';
-        // Enable buttons again after the process is done
-        buttons.forEach(button => button.disabled = false);
-    }
-}
-    function updateResults(options) {
-        const resultsContainer = document.getElementById('results');
-        const totalVotes = options.reduce((sum, option) => sum + option.votes, 0);
 
-        resultsContainer.innerHTML = `
-            <h3>Live Results</h3>
-            ${options.map(option => `
-                <div>
-                    <span>${option.option}: ${option.votes} votes</span>
-                    <div class="result-bar">
-                        <div class="result-bar-inner" style="width: ${(totalVotes > 0 ? (option.votes / totalVotes) * 100 : 0)}%;"></div>
+        function updateResults(options) {
+            const resultsContainer = document.getElementById('results');
+            const totalVotes = options.reduce((sum, option) => sum + option.votes, 0);
+
+            resultsContainer.innerHTML = `
+                <h3>Live Results</h3>
+                ${options.map(option => `
+                    <div>
+                        <span>${option.option}: ${option.votes} votes</span>
+                        <div class="result-bar">
+                            <div class="result-bar-inner" style="width: ${(totalVotes > 0 ? (option.votes / totalVotes) * 100 : 0)}%;"></div>
+                        </div>
                     </div>
-                </div>
-            `).join('')}
-        `;
-    }
-
-    socket.on('update_results', (data) => {
-        if (data.results) {
-            updateResults(data.results);
+                `).join('')}
+            `;
         }
-    });
+
+        function showPlaceholder() {
+            const pollContainer = document.getElementById('poll');
+            pollContainer.innerHTML = `
+                <p>There are currently no active polls.</p>
+                <img src="https://dejpknyizje2n.cloudfront.net/gallery/georgetown-hoyas-ncaa-logo-sticker-ncaa34-5128-342b07.webp" alt="Georgetown Hoyas logo">
+            `;
+        }
+
+        socket.on('update_results', (data) => {
+            if (data.results) {
+                updateResults(data.results);
+            }
+        });
+
         // Auto-refresh the page every 5 minutes
         setInterval(() => {
             location.reload();
         }, 5 * 60 * 1000);
 
-        window.onload = loadPoll;
+        // Function to save the student's name in local storage
+        function saveName() {
+            const name = document.getElementById('student-name').value;
+            if (name) {
+                localStorage.setItem('studentName', name);
+                document.getElementById('name-prompt').style.display = 'none';
+                loadPoll(); // Load the poll after saving the name
+            } else {
+                alert('Please enter your name.');
+            }
+        }
+
+        // Function to check if the student's name is already saved
+        function checkName() {
+            const name = localStorage.getItem('studentName');
+            if (name) {
+                document.getElementById('name-prompt').style.display = 'none';
+                loadPoll();
+            } else {
+                document.getElementById('name-prompt').style.display = 'block';
+            }
+        }
+
+        // Call checkName function on window load
+        window.onload = checkName;
     </script>
 </head>
 <body>
     <header>Georgetown SFS | Cyber Operations | Student Polling</header>
     <main>
-        <div id="poll"><p>Loading...</p></div>
-        <div id="results"></div>
+        <div id="name-prompt">
+            <label for="student-name">Enter your name:</label>
+            <input type="text" id="student-name" placeholder="Your name">
+            <button onclick="saveName()">Save Name</button>
+        </div>
         <div id="poll"><p>Loading...</p></div>
         <div id="results"></div>
         <div id="loading-spinner" style="display: none;">Submitting vote...</div>

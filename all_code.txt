@@ -99,11 +99,37 @@ def init_db():
                         question TEXT NOT NULL,
                         options TEXT NOT NULL -- JSON string of options
                     )''')
+        # Create votes table
+        c.execute('''CREATE TABLE IF NOT EXISTS votes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        option_id INTEGER NOT NULL,
+                        student_name TEXT NOT NULL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(option_id) REFERENCES options(id)
+                    )''')
+        conn.commit()
+        conn.close()
+    else:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        # Check if the votes table exists, and create it if it doesn't
+        c.execute('''CREATE TABLE IF NOT EXISTS votes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        option_id INTEGER NOT NULL,
+                        student_name TEXT NOT NULL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(option_id) REFERENCES options(id)
+                    )''')
         conn.commit()
         conn.close()
 
 # Initialize database
 init_db()
+
+@app.route('/init_db', methods=['GET'])
+def initialize_db():
+    init_db()
+    return jsonify({"success": True}), 200
 
 @app.route('/')
 def index():
@@ -153,10 +179,31 @@ def create_poll():
 
     return jsonify({"success": True}), 200
 
+@app.route('/votes_with_names', methods=['GET'])
+def votes_with_names():
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("""
+            SELECT v.student_name, o.option, v.timestamp
+            FROM votes v
+            JOIN options o ON v.option_id = o.id
+            ORDER BY v.timestamp DESC
+        """)
+        votes = [{"student_name": row[0], "option": row[1], "timestamp": row[2]} for row in c.fetchall()]
+        conn.close()
+        return jsonify(votes), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/vote', methods=['POST'])
 def vote():
     data = request.json
     option_id = data.get('option_id')
+    student_name = data.get('student_name')
+
+    if not student_name:
+        return jsonify({"error": "Student name is required"}), 400
 
     try:
         conn = sqlite3.connect('poll.db')
@@ -183,6 +230,9 @@ def vote():
         # Increment vote count
         c.execute("UPDATE options SET votes = votes + 1 WHERE id = ?", (option_id,))
 
+        # Store the student's vote
+        c.execute("INSERT INTO votes (option_id, student_name) VALUES (?, ?)", (option_id, student_name))
+
         # Fetch updated results
         c.execute("""
             SELECT id, option, votes 
@@ -194,8 +244,8 @@ def vote():
         conn.commit()
         conn.close()
 
-        # Emit the results to all clients
-        socketio.emit('update_results', {"results": results})
+        # Emit the results to all clients, including the voter's name
+        socketio.emit('update_results', {"results": results, "voter": student_name})
 
         return jsonify({"success": True}), 200
     except Exception as e:
@@ -267,7 +317,6 @@ def create_staged_poll():
     except Exception as e:
         print(f"Error staging poll: {e}")  # Debugging statement
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/staged_polls', methods=['GET'])
 def get_staged_polls():
@@ -374,6 +423,36 @@ def delete_staged_poll(poll_id):
 if __name__ == '__main__':
     # Make sure to use `socketio.run` instead of `app.run`
     socketio.run(app, host='0.0.0.0', port=5000)
+
+@app.route('/clear_poll', methods=['POST'])
+def clear_poll():
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+
+        # Archive the current poll
+        c.execute("SELECT * FROM questions ORDER BY id DESC LIMIT 1")
+        current_poll = c.fetchone()
+        if current_poll:
+            # Get options and votes for the current poll
+            c.execute("SELECT option, votes FROM options WHERE question_id = ?", (current_poll[0],))
+            current_options = [{"option": row[0], "votes": row[1]} for row in c.fetchall()]
+            # Archive the poll
+            c.execute("INSERT INTO archived_polls (question, options) VALUES (?, ?)", 
+                      (current_poll[1], json.dumps(current_options)))
+            # Remove the current poll
+            c.execute("DELETE FROM questions WHERE id = ?", (current_poll[0],))
+            c.execute("DELETE FROM options WHERE question_id = ?", (current_poll[0],))
+
+        conn.commit()
+        conn.close()
+
+        # Emit an event to notify clients that the poll has been cleared
+        socketio.emit('update_results', {"results": [], "voter": None})
+
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 --- End of ./app.py ---
 
@@ -494,11 +573,37 @@ def init_db():
                         question TEXT NOT NULL,
                         options TEXT NOT NULL -- JSON string of options
                     )''')
+        # Create votes table
+        c.execute('''CREATE TABLE IF NOT EXISTS votes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        option_id INTEGER NOT NULL,
+                        student_name TEXT NOT NULL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(option_id) REFERENCES options(id)
+                    )''')
+        conn.commit()
+        conn.close()
+    else:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        # Check if the votes table exists, and create it if it doesn't
+        c.execute('''CREATE TABLE IF NOT EXISTS votes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        option_id INTEGER NOT NULL,
+                        student_name TEXT NOT NULL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(option_id) REFERENCES options(id)
+                    )''')
         conn.commit()
         conn.close()
 
 # Initialize database
 init_db()
+
+@app.route('/init_db', methods=['GET'])
+def initialize_db():
+    init_db()
+    return jsonify({"success": True}), 200
 
 @app.route('/')
 def index():
@@ -548,10 +653,31 @@ def create_poll():
 
     return jsonify({"success": True}), 200
 
+@app.route('/votes_with_names', methods=['GET'])
+def votes_with_names():
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("""
+            SELECT v.student_name, o.option, v.timestamp
+            FROM votes v
+            JOIN options o ON v.option_id = o.id
+            ORDER BY v.timestamp DESC
+        """)
+        votes = [{"student_name": row[0], "option": row[1], "timestamp": row[2]} for row in c.fetchall()]
+        conn.close()
+        return jsonify(votes), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/vote', methods=['POST'])
 def vote():
     data = request.json
     option_id = data.get('option_id')
+    student_name = data.get('student_name')
+
+    if not student_name:
+        return jsonify({"error": "Student name is required"}), 400
 
     try:
         conn = sqlite3.connect('poll.db')
@@ -578,6 +704,9 @@ def vote():
         # Increment vote count
         c.execute("UPDATE options SET votes = votes + 1 WHERE id = ?", (option_id,))
 
+        # Store the student's vote
+        c.execute("INSERT INTO votes (option_id, student_name) VALUES (?, ?)", (option_id, student_name))
+
         # Fetch updated results
         c.execute("""
             SELECT id, option, votes 
@@ -589,8 +718,8 @@ def vote():
         conn.commit()
         conn.close()
 
-        # Emit the results to all clients
-        socketio.emit('update_results', {"results": results})
+        # Emit the results to all clients, including the voter's name
+        socketio.emit('update_results', {"results": results, "voter": student_name})
 
         return jsonify({"success": True}), 200
     except Exception as e:
@@ -662,7 +791,6 @@ def create_staged_poll():
     except Exception as e:
         print(f"Error staging poll: {e}")  # Debugging statement
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/staged_polls', methods=['GET'])
 def get_staged_polls():
@@ -770,68 +898,1052 @@ if __name__ == '__main__':
     # Make sure to use `socketio.run` instead of `app.run`
     socketio.run(app, host='0.0.0.0', port=5000)
 
+@app.route('/clear_poll', methods=['POST'])
+def clear_poll():
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+
+        # Archive the current poll
+        c.execute("SELECT * FROM questions ORDER BY id DESC LIMIT 1")
+        current_poll = c.fetchone()
+        if current_poll:
+            # Get options and votes for the current poll
+            c.execute("SELECT option, votes FROM options WHERE question_id = ?", (current_poll[0],))
+            current_options = [{"option": row[0], "votes": row[1]} for row in c.fetchall()]
+            # Archive the poll
+            c.execute("INSERT INTO archived_polls (question, options) VALUES (?, ?)", 
+                      (current_poll[1], json.dumps(current_options)))
+            # Remove the current poll
+            c.execute("DELETE FROM questions WHERE id = ?", (current_poll[0],))
+            c.execute("DELETE FROM options WHERE question_id = ?", (current_poll[0],))
+
+        conn.commit()
+        conn.close()
+
+        # Emit an event to notify clients that the poll has been cleared
+        socketio.emit('update_results', {"results": [], "voter": None})
+
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 --- End of ./all_code.txt ---
 
+--- Start of ./.git/COMMIT_EDITMSG ---
+Updated UI Improvements
+
+--- End of ./.git/COMMIT_EDITMSG ---
+
+--- Start of ./.git/config ---
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+[remote "origin"]
+	url = https://github.com/bel52/polling.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+
+--- End of ./.git/config ---
+
+--- Start of ./.git/HEAD ---
+ref: refs/heads/main
+
+--- End of ./.git/HEAD ---
+
+--- Start of ./.git/description ---
+Unnamed repository; edit this file 'description' to name the repository.
+
+--- End of ./.git/description ---
+
+--- Start of ./.git/index ---
+--- Start of ./.git/logs/HEAD ---
+0000000000000000000000000000000000000000 180330f99e8e69afe59cad22324c14341c8d6aa7 bel52 <bel52@georgetown.edu> 1736102185 -0500	commit (initial): Initial commit with project files
+180330f99e8e69afe59cad22324c14341c8d6aa7 722da1b031722d7d2c2484097e06f3a79a75e8cc bel52 <bel52@georgetown.edu> 1736104539 -0500	commit: Updated UI Improvements
+722da1b031722d7d2c2484097e06f3a79a75e8cc f3a73e91e3804878be3cb845b9c52ab07a5c099b bel52 <bel52@georgetown.edu> 1736105104 -0500	commit: Updated UI Improvements
+
+--- End of ./.git/logs/HEAD ---
+
+--- Start of ./.git/logs/refs/remotes/origin/main ---
+0000000000000000000000000000000000000000 180330f99e8e69afe59cad22324c14341c8d6aa7 bel52 <bel52@georgetown.edu> 1736102201 -0500	update by push
+180330f99e8e69afe59cad22324c14341c8d6aa7 722da1b031722d7d2c2484097e06f3a79a75e8cc bel52 <bel52@georgetown.edu> 1736104551 -0500	update by push
+722da1b031722d7d2c2484097e06f3a79a75e8cc f3a73e91e3804878be3cb845b9c52ab07a5c099b bel52 <bel52@georgetown.edu> 1736105108 -0500	update by push
+
+--- End of ./.git/logs/refs/remotes/origin/main ---
+
+--- Start of ./.git/logs/refs/heads/main ---
+0000000000000000000000000000000000000000 180330f99e8e69afe59cad22324c14341c8d6aa7 bel52 <bel52@georgetown.edu> 1736102185 -0500	commit (initial): Initial commit with project files
+180330f99e8e69afe59cad22324c14341c8d6aa7 722da1b031722d7d2c2484097e06f3a79a75e8cc bel52 <bel52@georgetown.edu> 1736104539 -0500	commit: Updated UI Improvements
+722da1b031722d7d2c2484097e06f3a79a75e8cc f3a73e91e3804878be3cb845b9c52ab07a5c099b bel52 <bel52@georgetown.edu> 1736105104 -0500	commit: Updated UI Improvements
+
+--- End of ./.git/logs/refs/heads/main ---
+
+--- Start of ./.git/info/exclude ---
+# git ls-files --others --exclude-from=.git/info/exclude
+# Lines that start with '#' are comments.
+# For a project mostly in C, the following would be a good set of
+# exclude patterns (uncomment them if you want to use them):
+# *.[oa]
+# *~
+
+--- End of ./.git/info/exclude ---
+
+--- Start of ./.git/refs/remotes/origin/main ---
+f3a73e91e3804878be3cb845b9c52ab07a5c099b
+
+--- End of ./.git/refs/remotes/origin/main ---
+
+--- Start of ./.git/refs/heads/main ---
+f3a73e91e3804878be3cb845b9c52ab07a5c099b
+
+--- End of ./.git/refs/heads/main ---
+
+--- Start of ./.git/hooks/pre-commit.sample ---
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed.
+# Called by "git commit" with no arguments.  The hook should
+# exit with non-zero status after issuing an appropriate message if
+# it wants to stop the commit.
+#
+# To enable this hook, rename this file to "pre-commit".
+
+if git rev-parse --verify HEAD >/dev/null 2>&1
+then
+	against=HEAD
+else
+	# Initial commit: diff against an empty tree object
+	against=$(git hash-object -t tree /dev/null)
+fi
+
+# If you want to allow non-ASCII filenames set this variable to true.
+allownonascii=$(git config --type=bool hooks.allownonascii)
+
+# Redirect output to stderr.
+exec 1>&2
+
+# Cross platform projects tend to avoid non-ASCII filenames; prevent
+# them from being added to the repository. We exploit the fact that the
+# printable range starts at the space character and ends with tilde.
+if [ "$allownonascii" != "true" ] &&
+	# Note that the use of brackets around a tr range is ok here, (it's
+	# even required, for portability to Solaris 10's /usr/bin/tr), since
+	# the square bracket bytes happen to fall in the designated range.
+	test $(git diff --cached --name-only --diff-filter=A -z $against |
+	  LC_ALL=C tr -d '[ -~]\0' | wc -c) != 0
+then
+	cat <<\EOF
+Error: Attempt to add a non-ASCII file name.
+
+This can cause problems if you want to work with people on other platforms.
+
+To be portable it is advisable to rename the file.
+
+If you know what you are doing you can disable this check using:
+
+  git config hooks.allownonascii true
+EOF
+	exit 1
+fi
+
+# If there are whitespace errors, print the offending file names and fail.
+exec git diff-index --check --cached $against --
+
+--- End of ./.git/hooks/pre-commit.sample ---
+
+--- Start of ./.git/hooks/prepare-commit-msg.sample ---
+#!/bin/sh
+#
+# An example hook script to prepare the commit log message.
+# Called by "git commit" with the name of the file that has the
+# commit message, followed by the description of the commit
+# message's source.  The hook's purpose is to edit the commit
+# message file.  If the hook fails with a non-zero status,
+# the commit is aborted.
+#
+# To enable this hook, rename this file to "prepare-commit-msg".
+
+# This hook includes three examples. The first one removes the
+# "# Please enter the commit message..." help message.
+#
+# The second includes the output of "git diff --name-status -r"
+# into the message, just before the "git status" output.  It is
+# commented because it doesn't cope with --amend or with squashed
+# commits.
+#
+# The third example adds a Signed-off-by line to the message, that can
+# still be edited.  This is rarely a good idea.
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+SHA1=$3
+
+/usr/bin/perl -i.bak -ne 'print unless(m/^. Please enter the commit message/..m/^#$/)' "$COMMIT_MSG_FILE"
+
+# case "$COMMIT_SOURCE,$SHA1" in
+#  ,|template,)
+#    /usr/bin/perl -i.bak -pe '
+#       print "\n" . `git diff --cached --name-status -r`
+# 	 if /^#/ && $first++ == 0' "$COMMIT_MSG_FILE" ;;
+#  *) ;;
+# esac
+
+# SOB=$(git var GIT_COMMITTER_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+# git interpret-trailers --in-place --trailer "$SOB" "$COMMIT_MSG_FILE"
+# if test -z "$COMMIT_SOURCE"
+# then
+#   /usr/bin/perl -i.bak -pe 'print "\n" if !$first_line++' "$COMMIT_MSG_FILE"
+# fi
+
+--- End of ./.git/hooks/prepare-commit-msg.sample ---
+
+--- Start of ./.git/hooks/post-update.sample ---
+#!/bin/sh
+#
+# An example hook script to prepare a packed repository for use over
+# dumb transports.
+#
+# To enable this hook, rename this file to "post-update".
+
+exec git update-server-info
+
+--- End of ./.git/hooks/post-update.sample ---
+
+--- Start of ./.git/hooks/pre-receive.sample ---
+#!/bin/sh
+#
+# An example hook script to make use of push options.
+# The example simply echoes all push options that start with 'echoback='
+# and rejects all pushes when the "reject" push option is used.
+#
+# To enable this hook, rename this file to "pre-receive".
+
+if test -n "$GIT_PUSH_OPTION_COUNT"
+then
+	i=0
+	while test "$i" -lt "$GIT_PUSH_OPTION_COUNT"
+	do
+		eval "value=\$GIT_PUSH_OPTION_$i"
+		case "$value" in
+		echoback=*)
+			echo "echo from the pre-receive-hook: ${value#*=}" >&2
+			;;
+		reject)
+			exit 1
+		esac
+		i=$((i + 1))
+	done
+fi
+
+--- End of ./.git/hooks/pre-receive.sample ---
+
+--- Start of ./.git/hooks/pre-rebase.sample ---
+#!/bin/sh
+#
+# Copyright (c) 2006, 2008 Junio C Hamano
+#
+# The "pre-rebase" hook is run just before "git rebase" starts doing
+# its job, and can prevent the command from running by exiting with
+# non-zero status.
+#
+# The hook is called with the following parameters:
+#
+# $1 -- the upstream the series was forked from.
+# $2 -- the branch being rebased (or empty when rebasing the current branch).
+#
+# This sample shows how to prevent topic branches that are already
+# merged to 'next' branch from getting rebased, because allowing it
+# would result in rebasing already published history.
+
+publish=next
+basebranch="$1"
+if test "$#" = 2
+then
+	topic="refs/heads/$2"
+else
+	topic=`git symbolic-ref HEAD` ||
+	exit 0 ;# we do not interrupt rebasing detached HEAD
+fi
+
+case "$topic" in
+refs/heads/??/*)
+	;;
+*)
+	exit 0 ;# we do not interrupt others.
+	;;
+esac
+
+# Now we are dealing with a topic branch being rebased
+# on top of master.  Is it OK to rebase it?
+
+# Does the topic really exist?
+git show-ref -q "$topic" || {
+	echo >&2 "No such branch $topic"
+	exit 1
+}
+
+# Is topic fully merged to master?
+not_in_master=`git rev-list --pretty=oneline ^master "$topic"`
+if test -z "$not_in_master"
+then
+	echo >&2 "$topic is fully merged to master; better remove it."
+	exit 1 ;# we could allow it, but there is no point.
+fi
+
+# Is topic ever merged to next?  If so you should not be rebasing it.
+only_next_1=`git rev-list ^master "^$topic" ${publish} | sort`
+only_next_2=`git rev-list ^master           ${publish} | sort`
+if test "$only_next_1" = "$only_next_2"
+then
+	not_in_topic=`git rev-list "^$topic" master`
+	if test -z "$not_in_topic"
+	then
+		echo >&2 "$topic is already up to date with master"
+		exit 1 ;# we could allow it, but there is no point.
+	else
+		exit 0
+	fi
+else
+	not_in_next=`git rev-list --pretty=oneline ^${publish} "$topic"`
+	/usr/bin/perl -e '
+		my $topic = $ARGV[0];
+		my $msg = "* $topic has commits already merged to public branch:\n";
+		my (%not_in_next) = map {
+			/^([0-9a-f]+) /;
+			($1 => 1);
+		} split(/\n/, $ARGV[1]);
+		for my $elem (map {
+				/^([0-9a-f]+) (.*)$/;
+				[$1 => $2];
+			} split(/\n/, $ARGV[2])) {
+			if (!exists $not_in_next{$elem->[0]}) {
+				if ($msg) {
+					print STDERR $msg;
+					undef $msg;
+				}
+				print STDERR " $elem->[1]\n";
+			}
+		}
+	' "$topic" "$not_in_next" "$not_in_master"
+	exit 1
+fi
+
+<<\DOC_END
+
+This sample hook safeguards topic branches that have been
+published from being rewound.
+
+The workflow assumed here is:
+
+ * Once a topic branch forks from "master", "master" is never
+   merged into it again (either directly or indirectly).
+
+ * Once a topic branch is fully cooked and merged into "master",
+   it is deleted.  If you need to build on top of it to correct
+   earlier mistakes, a new topic branch is created by forking at
+   the tip of the "master".  This is not strictly necessary, but
+   it makes it easier to keep your history simple.
+
+ * Whenever you need to test or publish your changes to topic
+   branches, merge them into "next" branch.
+
+The script, being an example, hardcodes the publish branch name
+to be "next", but it is trivial to make it configurable via
+$GIT_DIR/config mechanism.
+
+With this workflow, you would want to know:
+
+(1) ... if a topic branch has ever been merged to "next".  Young
+    topic branches can have stupid mistakes you would rather
+    clean up before publishing, and things that have not been
+    merged into other branches can be easily rebased without
+    affecting other people.  But once it is published, you would
+    not want to rewind it.
+
+(2) ... if a topic branch has been fully merged to "master".
+    Then you can delete it.  More importantly, you should not
+    build on top of it -- other people may already want to
+    change things related to the topic as patches against your
+    "master", so if you need further changes, it is better to
+    fork the topic (perhaps with the same name) afresh from the
+    tip of "master".
+
+Let's look at this example:
+
+		   o---o---o---o---o---o---o---o---o---o "next"
+		  /       /           /           /
+		 /   a---a---b A     /           /
+		/   /               /           /
+	       /   /   c---c---c---c B         /
+	      /   /   /             \         /
+	     /   /   /   b---b C     \       /
+	    /   /   /   /             \     /
+    ---o---o---o---o---o---o---o---o---o---o---o "master"
+
+
+A, B and C are topic branches.
+
+ * A has one fix since it was merged up to "next".
+
+ * B has finished.  It has been fully merged up to "master" and "next",
+   and is ready to be deleted.
+
+ * C has not merged to "next" at all.
+
+We would want to allow C to be rebased, refuse A, and encourage
+B to be deleted.
+
+To compute (1):
+
+	git rev-list ^master ^topic next
+	git rev-list ^master        next
+
+	if these match, topic has not merged in next at all.
+
+To compute (2):
+
+	git rev-list master..topic
+
+	if this is empty, it is fully merged to "master".
+
+DOC_END
+
+--- End of ./.git/hooks/pre-rebase.sample ---
+
+--- Start of ./.git/hooks/push-to-checkout.sample ---
+#!/bin/sh
+
+# An example hook script to update a checked-out tree on a git push.
+#
+# This hook is invoked by git-receive-pack(1) when it reacts to git
+# push and updates reference(s) in its repository, and when the push
+# tries to update the branch that is currently checked out and the
+# receive.denyCurrentBranch configuration variable is set to
+# updateInstead.
+#
+# By default, such a push is refused if the working tree and the index
+# of the remote repository has any difference from the currently
+# checked out commit; when both the working tree and the index match
+# the current commit, they are updated to match the newly pushed tip
+# of the branch. This hook is to be used to override the default
+# behaviour; however the code below reimplements the default behaviour
+# as a starting point for convenient modification.
+#
+# The hook receives the commit with which the tip of the current
+# branch is going to be updated:
+commit=$1
+
+# It can exit with a non-zero status to refuse the push (when it does
+# so, it must not modify the index or the working tree).
+die () {
+	echo >&2 "$*"
+	exit 1
+}
+
+# Or it can make any necessary changes to the working tree and to the
+# index to bring them to the desired state when the tip of the current
+# branch is updated to the new commit, and exit with a zero status.
+#
+# For example, the hook can simply run git read-tree -u -m HEAD "$1"
+# in order to emulate git fetch that is run in the reverse direction
+# with git push, as the two-tree form of git read-tree -u -m is
+# essentially the same as git switch or git checkout that switches
+# branches while keeping the local changes in the working tree that do
+# not interfere with the difference between the branches.
+
+# The below is a more-or-less exact translation to shell of the C code
+# for the default behaviour for git's push-to-checkout hook defined in
+# the push_to_deploy() function in builtin/receive-pack.c.
+#
+# Note that the hook will be executed from the repository directory,
+# not from the working tree, so if you want to perform operations on
+# the working tree, you will have to adapt your code accordingly, e.g.
+# by adding "cd .." or using relative paths.
+
+if ! git update-index -q --ignore-submodules --refresh
+then
+	die "Up-to-date check failed"
+fi
+
+if ! git diff-files --quiet --ignore-submodules --
+then
+	die "Working directory has unstaged changes"
+fi
+
+# This is a rough translation of:
+#
+#   head_has_history() ? "HEAD" : EMPTY_TREE_SHA1_HEX
+if git cat-file -e HEAD 2>/dev/null
+then
+	head=HEAD
+else
+	head=$(git hash-object -t tree --stdin </dev/null)
+fi
+
+if ! git diff-index --quiet --cached --ignore-submodules $head --
+then
+	die "Working directory has staged changes"
+fi
+
+if ! git read-tree -u -m "$commit"
+then
+	die "Could not update working tree to new HEAD"
+fi
+
+--- End of ./.git/hooks/push-to-checkout.sample ---
+
+--- Start of ./.git/hooks/pre-merge-commit.sample ---
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed.
+# Called by "git merge" with no arguments.  The hook should
+# exit with non-zero status after issuing an appropriate message to
+# stderr if it wants to stop the merge commit.
+#
+# To enable this hook, rename this file to "pre-merge-commit".
+
+. git-sh-setup
+test -x "$GIT_DIR/hooks/pre-commit" &&
+        exec "$GIT_DIR/hooks/pre-commit"
+:
+
+--- End of ./.git/hooks/pre-merge-commit.sample ---
+
+--- Start of ./.git/hooks/pre-push.sample ---
+#!/bin/sh
+
+# An example hook script to verify what is about to be pushed.  Called by "git
+# push" after it has checked the remote status, but before anything has been
+# pushed.  If this script exits with a non-zero status nothing will be pushed.
+#
+# This hook is called with the following parameters:
+#
+# $1 -- Name of the remote to which the push is being done
+# $2 -- URL to which the push is being done
+#
+# If pushing without using a named remote those arguments will be equal.
+#
+# Information about the commits which are being pushed is supplied as lines to
+# the standard input in the form:
+#
+#   <local ref> <local oid> <remote ref> <remote oid>
+#
+# This sample shows how to prevent push of commits where the log message starts
+# with "WIP" (work in progress).
+
+remote="$1"
+url="$2"
+
+zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+
+while read local_ref local_oid remote_ref remote_oid
+do
+	if test "$local_oid" = "$zero"
+	then
+		# Handle delete
+		:
+	else
+		if test "$remote_oid" = "$zero"
+		then
+			# New branch, examine all commits
+			range="$local_oid"
+		else
+			# Update to existing branch, examine new commits
+			range="$remote_oid..$local_oid"
+		fi
+
+		# Check for WIP commit
+		commit=$(git rev-list -n 1 --grep '^WIP' "$range")
+		if test -n "$commit"
+		then
+			echo >&2 "Found WIP commit in $local_ref, not pushing"
+			exit 1
+		fi
+	fi
+done
+
+exit 0
+
+--- End of ./.git/hooks/pre-push.sample ---
+
+--- Start of ./.git/hooks/commit-msg.sample ---
+#!/bin/sh
+#
+# An example hook script to check the commit log message.
+# Called by "git commit" with one argument, the name of the file
+# that has the commit message.  The hook should exit with non-zero
+# status after issuing an appropriate message if it wants to stop the
+# commit.  The hook is allowed to edit the commit message file.
+#
+# To enable this hook, rename this file to "commit-msg".
+
+# Uncomment the below to add a Signed-off-by line to the message.
+# Doing this in a hook is a bad idea in general, but the prepare-commit-msg
+# hook is more suited to it.
+#
+# SOB=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+# grep -qs "^$SOB" "$1" || echo "$SOB" >> "$1"
+
+# This example catches duplicate Signed-off-by lines.
+
+test "" = "$(grep '^Signed-off-by: ' "$1" |
+	 sort | uniq -c | sed -e '/^[ 	]*1[ 	]/d')" || {
+	echo >&2 Duplicate Signed-off-by lines.
+	exit 1
+}
+
+--- End of ./.git/hooks/commit-msg.sample ---
+
+--- Start of ./.git/hooks/update.sample ---
+#!/bin/sh
+#
+# An example hook script to block unannotated tags from entering.
+# Called by "git receive-pack" with arguments: refname sha1-old sha1-new
+#
+# To enable this hook, rename this file to "update".
+#
+# Config
+# ------
+# hooks.allowunannotated
+#   This boolean sets whether unannotated tags will be allowed into the
+#   repository.  By default they won't be.
+# hooks.allowdeletetag
+#   This boolean sets whether deleting tags will be allowed in the
+#   repository.  By default they won't be.
+# hooks.allowmodifytag
+#   This boolean sets whether a tag may be modified after creation. By default
+#   it won't be.
+# hooks.allowdeletebranch
+#   This boolean sets whether deleting branches will be allowed in the
+#   repository.  By default they won't be.
+# hooks.denycreatebranch
+#   This boolean sets whether remotely creating branches will be denied
+#   in the repository.  By default this is allowed.
+#
+
+# --- Command line
+refname="$1"
+oldrev="$2"
+newrev="$3"
+
+# --- Safety check
+if [ -z "$GIT_DIR" ]; then
+	echo "Don't run this script from the command line." >&2
+	echo " (if you want, you could supply GIT_DIR then run" >&2
+	echo "  $0 <ref> <oldrev> <newrev>)" >&2
+	exit 1
+fi
+
+if [ -z "$refname" -o -z "$oldrev" -o -z "$newrev" ]; then
+	echo "usage: $0 <ref> <oldrev> <newrev>" >&2
+	exit 1
+fi
+
+# --- Config
+allowunannotated=$(git config --type=bool hooks.allowunannotated)
+allowdeletebranch=$(git config --type=bool hooks.allowdeletebranch)
+denycreatebranch=$(git config --type=bool hooks.denycreatebranch)
+allowdeletetag=$(git config --type=bool hooks.allowdeletetag)
+allowmodifytag=$(git config --type=bool hooks.allowmodifytag)
+
+# check for no description
+projectdesc=$(sed -e '1q' "$GIT_DIR/description")
+case "$projectdesc" in
+"Unnamed repository"* | "")
+	echo "*** Project description file hasn't been set" >&2
+	exit 1
+	;;
+esac
+
+# --- Check types
+# if $newrev is 0000...0000, it's a commit to delete a ref.
+zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+if [ "$newrev" = "$zero" ]; then
+	newrev_type=delete
+else
+	newrev_type=$(git cat-file -t $newrev)
+fi
+
+case "$refname","$newrev_type" in
+	refs/tags/*,commit)
+		# un-annotated tag
+		short_refname=${refname##refs/tags/}
+		if [ "$allowunannotated" != "true" ]; then
+			echo "*** The un-annotated tag, $short_refname, is not allowed in this repository" >&2
+			echo "*** Use 'git tag [ -a | -s ]' for tags you want to propagate." >&2
+			exit 1
+		fi
+		;;
+	refs/tags/*,delete)
+		# delete tag
+		if [ "$allowdeletetag" != "true" ]; then
+			echo "*** Deleting a tag is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/tags/*,tag)
+		# annotated tag
+		if [ "$allowmodifytag" != "true" ] && git rev-parse $refname > /dev/null 2>&1
+		then
+			echo "*** Tag '$refname' already exists." >&2
+			echo "*** Modifying a tag is not allowed in this repository." >&2
+			exit 1
+		fi
+		;;
+	refs/heads/*,commit)
+		# branch
+		if [ "$oldrev" = "$zero" -a "$denycreatebranch" = "true" ]; then
+			echo "*** Creating a branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/heads/*,delete)
+		# delete branch
+		if [ "$allowdeletebranch" != "true" ]; then
+			echo "*** Deleting a branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/remotes/*,commit)
+		# tracking branch
+		;;
+	refs/remotes/*,delete)
+		# delete tracking branch
+		if [ "$allowdeletebranch" != "true" ]; then
+			echo "*** Deleting a tracking branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	*)
+		# Anything else (is there anything else?)
+		echo "*** Update hook: unknown type of update to ref $refname of type $newrev_type" >&2
+		exit 1
+		;;
+esac
+
+# --- Finished
+exit 0
+
+--- End of ./.git/hooks/update.sample ---
+
+--- Start of ./.git/hooks/pre-applypatch.sample ---
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed
+# by applypatch from an e-mail message.
+#
+# The hook should exit with non-zero status after issuing an
+# appropriate message if it wants to stop the commit.
+#
+# To enable this hook, rename this file to "pre-applypatch".
+
+. git-sh-setup
+precommit="$(git rev-parse --git-path hooks/pre-commit)"
+test -x "$precommit" && exec "$precommit" ${1+"$@"}
+:
+
+--- End of ./.git/hooks/pre-applypatch.sample ---
+
+--- Start of ./.git/hooks/fsmonitor-watchman.sample ---
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use IPC::Open2;
+
+# An example hook script to integrate Watchman
+# (https://facebook.github.io/watchman/) with git to speed up detecting
+# new and modified files.
+#
+# The hook is passed a version (currently 2) and last update token
+# formatted as a string and outputs to stdout a new update token and
+# all files that have been modified since the update token. Paths must
+# be relative to the root of the working tree and separated by a single NUL.
+#
+# To enable this hook, rename this file to "query-watchman" and set
+# 'git config core.fsmonitor .git/hooks/query-watchman'
+#
+my ($version, $last_update_token) = @ARGV;
+
+# Uncomment for debugging
+# print STDERR "$0 $version $last_update_token\n";
+
+# Check the hook interface version
+if ($version ne 2) {
+	die "Unsupported query-fsmonitor hook version '$version'.\n" .
+	    "Falling back to scanning...\n";
+}
+
+my $git_work_tree = get_working_dir();
+
+my $retry = 1;
+
+my $json_pkg;
+eval {
+	require JSON::XS;
+	$json_pkg = "JSON::XS";
+	1;
+} or do {
+	require JSON::PP;
+	$json_pkg = "JSON::PP";
+};
+
+launch_watchman();
+
+sub launch_watchman {
+	my $o = watchman_query();
+	if (is_work_tree_watched($o)) {
+		output_result($o->{clock}, @{$o->{files}});
+	}
+}
+
+sub output_result {
+	my ($clockid, @files) = @_;
+
+	# Uncomment for debugging watchman output
+	# open (my $fh, ">", ".git/watchman-output.out");
+	# binmode $fh, ":utf8";
+	# print $fh "$clockid\n@files\n";
+	# close $fh;
+
+	binmode STDOUT, ":utf8";
+	print $clockid;
+	print "\0";
+	local $, = "\0";
+	print @files;
+}
+
+sub watchman_clock {
+	my $response = qx/watchman clock "$git_work_tree"/;
+	die "Failed to get clock id on '$git_work_tree'.\n" .
+		"Falling back to scanning...\n" if $? != 0;
+
+	return $json_pkg->new->utf8->decode($response);
+}
+
+sub watchman_query {
+	my $pid = open2(\*CHLD_OUT, \*CHLD_IN, 'watchman -j --no-pretty')
+	or die "open2() failed: $!\n" .
+	"Falling back to scanning...\n";
+
+	# In the query expression below we're asking for names of files that
+	# changed since $last_update_token but not from the .git folder.
+	#
+	# To accomplish this, we're using the "since" generator to use the
+	# recency index to select candidate nodes and "fields" to limit the
+	# output to file names only. Then we're using the "expression" term to
+	# further constrain the results.
+	if (substr($last_update_token, 0, 1) eq "c") {
+		$last_update_token = "\"$last_update_token\"";
+	}
+	my $query = <<"	END";
+		["query", "$git_work_tree", {
+			"since": $last_update_token,
+			"fields": ["name"],
+			"expression": ["not", ["dirname", ".git"]]
+		}]
+	END
+
+	# Uncomment for debugging the watchman query
+	# open (my $fh, ">", ".git/watchman-query.json");
+	# print $fh $query;
+	# close $fh;
+
+	print CHLD_IN $query;
+	close CHLD_IN;
+	my $response = do {local $/; <CHLD_OUT>};
+
+	# Uncomment for debugging the watch response
+	# open ($fh, ">", ".git/watchman-response.json");
+	# print $fh $response;
+	# close $fh;
+
+	die "Watchman: command returned no output.\n" .
+	"Falling back to scanning...\n" if $response eq "";
+	die "Watchman: command returned invalid output: $response\n" .
+	"Falling back to scanning...\n" unless $response =~ /^\{/;
+
+	return $json_pkg->new->utf8->decode($response);
+}
+
+sub is_work_tree_watched {
+	my ($output) = @_;
+	my $error = $output->{error};
+	if ($retry > 0 and $error and $error =~ m/unable to resolve root .* directory (.*) is not watched/) {
+		$retry--;
+		my $response = qx/watchman watch "$git_work_tree"/;
+		die "Failed to make watchman watch '$git_work_tree'.\n" .
+		    "Falling back to scanning...\n" if $? != 0;
+		$output = $json_pkg->new->utf8->decode($response);
+		$error = $output->{error};
+		die "Watchman: $error.\n" .
+		"Falling back to scanning...\n" if $error;
+
+		# Uncomment for debugging watchman output
+		# open (my $fh, ">", ".git/watchman-output.out");
+		# close $fh;
+
+		# Watchman will always return all files on the first query so
+		# return the fast "everything is dirty" flag to git and do the
+		# Watchman query just to get it over with now so we won't pay
+		# the cost in git to look up each individual file.
+		my $o = watchman_clock();
+		$error = $output->{error};
+
+		die "Watchman: $error.\n" .
+		"Falling back to scanning...\n" if $error;
+
+		output_result($o->{clock}, ("/"));
+		$last_update_token = $o->{clock};
+
+		eval { launch_watchman() };
+		return 0;
+	}
+
+	die "Watchman: $error.\n" .
+	"Falling back to scanning...\n" if $error;
+
+	return 1;
+}
+
+sub get_working_dir {
+	my $working_dir;
+	if ($^O =~ 'msys' || $^O =~ 'cygwin') {
+		$working_dir = Win32::GetCwd();
+		$working_dir =~ tr/\\/\//;
+	} else {
+		require Cwd;
+		$working_dir = Cwd::cwd();
+	}
+
+	return $working_dir;
+}
+
+--- End of ./.git/hooks/fsmonitor-watchman.sample ---
+
+--- Start of ./.git/hooks/applypatch-msg.sample ---
+#!/bin/sh
+#
+# An example hook script to check the commit log message taken by
+# applypatch from an e-mail message.
+#
+# The hook should exit with non-zero status after issuing an
+# appropriate message if it wants to stop the commit.  The hook is
+# allowed to edit the commit message file.
+#
+# To enable this hook, rename this file to "applypatch-msg".
+
+. git-sh-setup
+commitmsg="$(git rev-parse --git-path hooks/commit-msg)"
+test -x "$commitmsg" && exec "$commitmsg" ${1+"$@"}
+:
+
+--- End of ./.git/hooks/applypatch-msg.sample ---
+
+--- Start of ./.git/objects/9b/17da65e3f6068eb7f6a7f45e7a191b131f4ca4 ---
+--- Start of ./.git/objects/8e/4b4c18f08bd2ea4a7bf968c9d6a95fd29d3db4 ---
+--- Start of ./.git/objects/6c/645e294c79953938600d00964be04c2300cd48 ---
+--- Start of ./.git/objects/6b/7ff578368c8f5b4b5a60cccef8473665e2727a ---
+--- Start of ./.git/objects/88/ee899d73d07e9ffc3b229aa8fcfa5306e9ebd3 ---
+--- Start of ./.git/objects/d5/686774acf0789bca2f9af98363807a6e70ba7a ---
+--- Start of ./.git/objects/dc/89f2823fe7b191517b18d23e9c3ca01e2c6077 ---
+--- Start of ./.git/objects/be/b68aa27c72913dc6638abdbd95498478d2dccd ---
+--- Start of ./.git/objects/72/2da1b031722d7d2c2484097e06f3a79a75e8cc ---
+--- Start of ./.git/objects/18/0330f99e8e69afe59cad22324c14341c8d6aa7 ---
+--- Start of ./.git/objects/aa/9ebe211f33fea690a98e8c7747b84f0edbf6dc ---
+--- Start of ./.git/objects/04/3ccc5831845ca6269ba4e36e1e796e3d4e8bc0 ---
+--- Start of ./.git/objects/46/20c819c9ca815c1bda4a257eaca62efdb0e401 ---
+--- Start of ./.git/objects/d1/611deb413bb798a7eb63ed5c23144267791e64 ---
+--- Start of ./.git/objects/f4/18284f2ed1d049050b3768afca0d94552b92b9 ---
+--- Start of ./.git/objects/fa/09d24959ac8cfb9a7f8b60c63c2beeb968de2a ---
+--- Start of ./.git/objects/0e/5de979aa630c021b9d073a193e44e9c0d045e8 ---
+--- Start of ./.git/objects/67/b12226b38540230a4f0100042b068af960e655 ---
+--- Start of ./.git/objects/3d/f7d9d883284ed79d0083a27ba88a9f7fbda64d ---
+--- Start of ./.git/objects/f3/a73e91e3804878be3cb845b9c52ab07a5c099b ---
+--- Start of ./.git/objects/55/a5f904d4921b1e10bda400407e4abb5dfd4cf3 ---
+--- Start of ./.git/objects/16/55217ac4751393de03d2ecd9cbf5ad917e6df8 ---
 --- Start of ./templates/professor.html ---
 <!DOCTYPE html>
 <html>
 <head>
     <title>Georgetown SFS | Cyber Operations | Professor Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script>
-async function createPoll() {
-    const question = document.getElementById('question').value;
-    const options = document.getElementById('options').value.split(',');
+        const socket = io();
 
-    const response = await fetch('/create_poll', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, options })
-    });
+        async function createPoll() {
+            const question = document.getElementById('question').value;
+            const options = document.getElementById('options').value.split(',');
 
-    if (response.ok) {
-        alert('Poll created!');
-        loadResults();
-        loadArchivedPolls();
-        // Clear the input fields
-        document.getElementById('question').value = '';
-        document.getElementById('options').value = '';
-    } else {
-        alert('Error creating poll.');
-    }
-}
+            const response = await fetch('/create_poll', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, options })
+            });
 
-async function stagePoll() {
-    const question = document.getElementById('question').value;
-    const options = document.getElementById('options').value.split(',');
+            if (response.ok) {
+                alert('Poll created!');
+                loadResults();
+                loadArchivedPolls();
+                // Clear the input fields
+                document.getElementById('question').value = '';
+                document.getElementById('options').value = '';
+            } else {
+                alert('Error creating poll.');
+            }
+        }
 
-    const response = await fetch('/stage_poll', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, options })
-    });
+        async function clearPoll() {
+            const response = await fetch('/clear_poll', { method: 'POST' });
+            if (response.ok) {
+                alert('Poll cleared and archived!');
+                loadResults();
+            } else {
+                alert('Error clearing poll.');
+            }
+        }
 
-    if (response.ok) {
-        alert('Poll staged!');
-        loadStagedPolls();
-        // Clear the input fields
-        document.getElementById('question').value = '';
-        document.getElementById('options').value = '';
-    } else {
-        alert('Error staging poll.');
-    }
-}
+        async function stagePoll() {
+            const question = document.getElementById('question').value;
+            const options = document.getElementById('options').value.split(',');
+
+            const response = await fetch('/stage_poll', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, options })
+            });
+
+            if (response.ok) {
+                alert('Poll staged!');
+                loadStagedPolls();
+                // Clear the input fields
+                document.getElementById('question').value = '';
+                document.getElementById('options').value = '';
+            } else {
+                alert('Error staging poll.');
+            }
+        }
 
         async function loadResults() {
             const response = await fetch('/current_poll');
             if (response.ok) {
                 const data = await response.json();
                 const resultsContainer = document.getElementById('results');
-                resultsContainer.innerHTML = `
-                    <h3>${data.question}</h3>
-                    ${data.options.map(option => `
-                        <p>${option.option}: ${option.votes} votes</p>
-                    `).join('')}
-                `;
+                if (data.question) {
+                    resultsContainer.innerHTML = `
+                        <h3>${data.question}</h3>
+                        ${data.options.map(option => `
+                            <p>${option.option}: ${option.votes} votes</p>
+                        `).join('')}
+                        <button onclick="clearPoll()">Clear Poll</button>
+                    `;
+                } else {
+                    resultsContainer.innerHTML = '<p>No active poll.</p>';
+                }
             } else {
                 document.getElementById('results').innerHTML = '<p>No active poll.</p>';
             }
@@ -900,23 +2012,60 @@ async function stagePoll() {
             }
         }
 
-async function deleteStagedPoll(pollId) {
-    console.log(`Deleting staged poll with ID: ${pollId}`); // Debugging
-    const response = await fetch(`/delete_staged_poll/${pollId}`, { method: 'DELETE' });
-    if (response.ok) {
-        alert('Poll deleted!');
-        loadStagedPolls();
-    } else {
-        const errorMessage = await response.text();
-        console.error(`Error deleting staged poll: ${errorMessage}`); // Debugging
-        alert(`Error deleting poll: ${errorMessage}`);
-    }
-}
+        async function deleteStagedPoll(pollId) {
+            console.log(`Deleting staged poll with ID: ${pollId}`); // Debugging
+            const response = await fetch(`/delete_staged_poll/${pollId}`, { method: 'DELETE' });
+            if (response.ok) {
+                alert('Poll deleted!');
+                loadStagedPolls();
+            } else {
+                const errorMessage = await response.text();
+                console.error(`Error deleting staged poll: ${errorMessage}`); // Debugging
+                alert(`Error deleting poll: ${errorMessage}`);
+            }
+        }
+
+        async function deleteArchivedPoll(pollId) {
+            const response = await fetch(`/delete_poll/${pollId}`, { method: 'DELETE' });
+            if (response.ok) {
+                alert('Archived poll deleted!');
+                loadArchivedPolls();
+            } else {
+                const errorMessage = await response.text();
+                console.error(`Error deleting archived poll: ${errorMessage}`);
+                alert(`Error deleting archived poll: ${errorMessage}`);
+            }
+        }
+
+        async function loadVotes() {
+            const response = await fetch('/votes_with_names');
+            if (response.ok) {
+                const votes = await response.json();
+                const votesContainer = document.getElementById('votes');
+                if (votes.length === 0) {
+                    votesContainer.innerHTML = '<p>No votes yet.</p>';
+                    return;
+                }
+                votesContainer.innerHTML = votes.map(vote => `
+                    <div>
+                        <p>${vote.student_name} voted for ${vote.option} at ${vote.timestamp}</p>
+                    </div>
+                `).join('');
+            } else {
+                document.getElementById('votes').innerHTML = '<p>Error loading votes.</p>';
+            }
+        }
+
+        socket.on('update_results', (data) => {
+            loadResults();
+            loadVotes();
+        });
 
         window.onload = function () {
             loadResults();
             loadArchivedPolls();
             loadStagedPolls();
+            loadVotes();  // Load votes with student names
         };
     </script>
     <style>
@@ -991,7 +2140,10 @@ async function deleteStagedPoll(pollId) {
 
         <h2>Current Poll Results</h2>
         <div id="results"><p>Loading...</p></div>
-
+        
+        <h2>Votes with Student Names</h2>
+        <div id="votes"><p>Loading...</p></div>
+        
         <h2>Staged Polls</h2>
         <div id="staged"><p>Loading...</p></div>
 
@@ -1085,6 +2237,13 @@ async function deleteStagedPoll(pollId) {
             height: 100%;
             border-radius: 5px;
         }
+
+        img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+        }
     </style>
     <script>
         const socket = io();
@@ -1093,11 +2252,16 @@ async function deleteStagedPoll(pollId) {
             const response = await fetch('/current_poll');
             if (response.ok) {
                 const data = await response.json();
-                displayPoll(data);
+                if (data.question) {
+                    displayPoll(data);
+                } else {
+                    showPlaceholder();
+                }
             } else {
-                document.getElementById('poll').innerHTML = '<p>No active poll.</p>';
-                document.getElementById('results').innerHTML = '';
+                showPlaceholder();
             }
+            // Hide the loading spinner after the poll is loaded
+            document.getElementById('loading-spinner').style.display = 'none';
         }
 
         function displayPoll(data) {
@@ -1111,66 +2275,123 @@ async function deleteStagedPoll(pollId) {
 
             updateResults(data.options);
         }
-    async function vote(optionId) {
-        try {
-            const response = await fetch('/vote', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ option_id: optionId })
-            });
 
-            if (response.ok) {
-                alert('Vote submitted!');
-            } else {
-                const result = await response.json();
-                if (result.error.includes("Stale poll")) {
-                    alert(result.error);
-                    location.reload(); // Refresh the page to show the current poll
-                } else {
-                    alert('Error submitting vote: ' + result.error);
-                }
+        async function vote(optionId) {
+            const name = localStorage.getItem('studentName');
+            if (!name) {
+                alert('Please enter your name.');
+                return;
             }
-        } catch (err) {
-            console.error(err);
-            alert('Network error while submitting vote.');
+
+            // Disable all buttons after voting
+            const buttons = document.querySelectorAll('button');
+            buttons.forEach(button => button.disabled = true);
+
+            // Show loading spinner
+            document.getElementById('loading-spinner').style.display = 'block';
+
+            try {
+                const response = await fetch('/vote', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ option_id: optionId, student_name: name })
+                });
+
+                if (response.ok) {
+                    alert('Vote submitted!');
+                } else {
+                    const result = await response.json();
+                    if (result.error.includes("Stale poll")) {
+                        alert(result.error);
+                        location.reload(); // Refresh the page to show the current poll
+                    } else {
+                        alert('Error submitting vote: ' + result.error);
+                    }
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Network error while submitting vote.');
+            } finally {
+                // Hide loading spinner after the process is done
+                document.getElementById('loading-spinner').style.display = 'none';
+                // Do not re-enable buttons to prevent multiple votes
+            }
         }
-    }
 
-    function updateResults(options) {
-        const resultsContainer = document.getElementById('results');
-        const totalVotes = options.reduce((sum, option) => sum + option.votes, 0);
+        function updateResults(options) {
+            const resultsContainer = document.getElementById('results');
+            const totalVotes = options.reduce((sum, option) => sum + option.votes, 0);
 
-        resultsContainer.innerHTML = `
-            <h3>Live Results</h3>
-            ${options.map(option => `
-                <div>
-                    <span>${option.option}: ${option.votes} votes</span>
-                    <div class="result-bar">
-                        <div class="result-bar-inner" style="width: ${(totalVotes > 0 ? (option.votes / totalVotes) * 100 : 0)}%;"></div>
+            resultsContainer.innerHTML = `
+                <h3>Live Results</h3>
+                ${options.map(option => `
+                    <div>
+                        <span>${option.option}: ${option.votes} votes</span>
+                        <div class="result-bar">
+                            <div class="result-bar-inner" style="width: ${(totalVotes > 0 ? (option.votes / totalVotes) * 100 : 0)}%;"></div>
+                        </div>
                     </div>
-                </div>
-            `).join('')}
-        `;
-    }
-
-    socket.on('update_results', (data) => {
-        if (data.results) {
-            updateResults(data.results);
+                `).join('')}
+            `;
         }
-    });
+
+        function showPlaceholder() {
+            const pollContainer = document.getElementById('poll');
+            pollContainer.innerHTML = `
+                <p>There are currently no active polls.</p>
+                <img src="https://dejpknyizje2n.cloudfront.net/gallery/georgetown-hoyas-ncaa-logo-sticker-ncaa34-5128-342b07.webp" alt="Georgetown Hoyas logo">
+            `;
+        }
+
+        socket.on('update_results', (data) => {
+            if (data.results) {
+                updateResults(data.results);
+            }
+        });
+
         // Auto-refresh the page every 5 minutes
         setInterval(() => {
             location.reload();
         }, 5 * 60 * 1000);
 
-        window.onload = loadPoll;
+        // Function to save the student's name in local storage
+        function saveName() {
+            const name = document.getElementById('student-name').value;
+            if (name) {
+                localStorage.setItem('studentName', name);
+                document.getElementById('name-prompt').style.display = 'none';
+                loadPoll(); // Load the poll after saving the name
+            } else {
+                alert('Please enter your name.');
+            }
+        }
+
+        // Function to check if the student's name is already saved
+        function checkName() {
+            const name = localStorage.getItem('studentName');
+            if (name) {
+                document.getElementById('name-prompt').style.display = 'none';
+                loadPoll();
+            } else {
+                document.getElementById('name-prompt').style.display = 'block';
+            }
+        }
+
+        // Call checkName function on window load
+        window.onload = checkName;
     </script>
 </head>
 <body>
     <header>Georgetown SFS | Cyber Operations | Student Polling</header>
     <main>
+        <div id="name-prompt">
+            <label for="student-name">Enter your name:</label>
+            <input type="text" id="student-name" placeholder="Your name">
+            <button onclick="saveName()">Save Name</button>
+        </div>
         <div id="poll"><p>Loading...</p></div>
         <div id="results"></div>
+        <div id="loading-spinner" style="display: none;">Submitting vote...</div>
     </main>
 </body>
 </html>

@@ -2,60 +2,79 @@
 <html>
 <head>
     <title>Georgetown SFS | Cyber Operations | Professor Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script>
-async function createPoll() {
-    const question = document.getElementById('question').value;
-    const options = document.getElementById('options').value.split(',');
+        const socket = io();
 
-    const response = await fetch('/create_poll', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, options })
-    });
+        async function createPoll() {
+            const question = document.getElementById('question').value;
+            const options = document.getElementById('options').value.split(',');
 
-    if (response.ok) {
-        alert('Poll created!');
-        loadResults();
-        loadArchivedPolls();
-        // Clear the input fields
-        document.getElementById('question').value = '';
-        document.getElementById('options').value = '';
-    } else {
-        alert('Error creating poll.');
-    }
-}
+            const response = await fetch('/create_poll', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, options })
+            });
 
-async function stagePoll() {
-    const question = document.getElementById('question').value;
-    const options = document.getElementById('options').value.split(',');
+            if (response.ok) {
+                alert('Poll created!');
+                loadResults();
+                loadArchivedPolls();
+                // Clear the input fields
+                document.getElementById('question').value = '';
+                document.getElementById('options').value = '';
+            } else {
+                alert('Error creating poll.');
+            }
+        }
 
-    const response = await fetch('/stage_poll', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, options })
-    });
+        async function clearPoll() {
+            const response = await fetch('/clear_poll', { method: 'POST' });
+            if (response.ok) {
+                alert('Poll cleared and archived!');
+                loadResults();
+            } else {
+                alert('Error clearing poll.');
+            }
+        }
 
-    if (response.ok) {
-        alert('Poll staged!');
-        loadStagedPolls();
-        // Clear the input fields
-        document.getElementById('question').value = '';
-        document.getElementById('options').value = '';
-    } else {
-        alert('Error staging poll.');
-    }
-}
+        async function stagePoll() {
+            const question = document.getElementById('question').value;
+            const options = document.getElementById('options').value.split(',');
+
+            const response = await fetch('/stage_poll', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, options })
+            });
+
+            if (response.ok) {
+                alert('Poll staged!');
+                loadStagedPolls();
+                // Clear the input fields
+                document.getElementById('question').value = '';
+                document.getElementById('options').value = '';
+            } else {
+                alert('Error staging poll.');
+            }
+        }
+
         async function loadResults() {
             const response = await fetch('/current_poll');
             if (response.ok) {
                 const data = await response.json();
                 const resultsContainer = document.getElementById('results');
-                resultsContainer.innerHTML = `
-                    <h3>${data.question}</h3>
-                    ${data.options.map(option => `
-                        <p>${option.option}: ${option.votes} votes</p>
-                    `).join('')}
-                `;
+                if (data.question) {
+                    resultsContainer.innerHTML = `
+                        <h3>${data.question}</h3>
+                        ${data.options.map(option => `
+                            <p>${option.option}: ${option.votes} votes</p>
+                        `).join('')}
+                        <button onclick="clearPoll()">Clear Poll</button>
+                    `;
+                } else {
+                    resultsContainer.innerHTML = '<p>No active poll.</p>';
+                }
             } else {
                 document.getElementById('results').innerHTML = '<p>No active poll.</p>';
             }
@@ -124,23 +143,60 @@ async function stagePoll() {
             }
         }
 
-async function deleteStagedPoll(pollId) {
-    console.log(`Deleting staged poll with ID: ${pollId}`); // Debugging
-    const response = await fetch(`/delete_staged_poll/${pollId}`, { method: 'DELETE' });
-    if (response.ok) {
-        alert('Poll deleted!');
-        loadStagedPolls();
-    } else {
-        const errorMessage = await response.text();
-        console.error(`Error deleting staged poll: ${errorMessage}`); // Debugging
-        alert(`Error deleting poll: ${errorMessage}`);
-    }
-}
+        async function deleteStagedPoll(pollId) {
+            console.log(`Deleting staged poll with ID: ${pollId}`); // Debugging
+            const response = await fetch(`/delete_staged_poll/${pollId}`, { method: 'DELETE' });
+            if (response.ok) {
+                alert('Poll deleted!');
+                loadStagedPolls();
+            } else {
+                const errorMessage = await response.text();
+                console.error(`Error deleting staged poll: ${errorMessage}`); // Debugging
+                alert(`Error deleting poll: ${errorMessage}`);
+            }
+        }
+
+        async function deleteArchivedPoll(pollId) {
+            const response = await fetch(`/delete_poll/${pollId}`, { method: 'DELETE' });
+            if (response.ok) {
+                alert('Archived poll deleted!');
+                loadArchivedPolls();
+            } else {
+                const errorMessage = await response.text();
+                console.error(`Error deleting archived poll: ${errorMessage}`);
+                alert(`Error deleting archived poll: ${errorMessage}`);
+            }
+        }
+
+        async function loadVotes() {
+            const response = await fetch('/votes_with_names');
+            if (response.ok) {
+                const votes = await response.json();
+                const votesContainer = document.getElementById('votes');
+                if (votes.length === 0) {
+                    votesContainer.innerHTML = '<p>No votes yet.</p>';
+                    return;
+                }
+                votesContainer.innerHTML = votes.map(vote => `
+                    <div>
+                        <p>${vote.student_name} voted for ${vote.option} at ${vote.timestamp}</p>
+                    </div>
+                `).join('');
+            } else {
+                document.getElementById('votes').innerHTML = '<p>Error loading votes.</p>';
+            }
+        }
+
+        socket.on('update_results', (data) => {
+            loadResults();
+            loadVotes();
+        });
 
         window.onload = function () {
             loadResults();
             loadArchivedPolls();
             loadStagedPolls();
+            loadVotes();  // Load votes with student names
         };
     </script>
     <style>
@@ -215,7 +271,10 @@ async function deleteStagedPoll(pollId) {
 
         <h2>Current Poll Results</h2>
         <div id="results"><p>Loading...</p></div>
-
+        
+        <h2>Votes with Student Names</h2>
+        <div id="votes"><p>Loading...</p></div>
+        
         <h2>Staged Polls</h2>
         <div id="staged"><p>Loading...</p></div>
 
