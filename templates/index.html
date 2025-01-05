@@ -83,17 +83,18 @@
     <script>
         const socket = io();
 
-        async function loadPoll() {
-            const response = await fetch('/current_poll');
-            if (response.ok) {
-                const data = await response.json();
-                displayPoll(data);
-            } else {
-                document.getElementById('poll').innerHTML = '<p>No active poll.</p>';
-                document.getElementById('results').innerHTML = '';
-            }
-        }
-
+async function loadPoll() {
+    const response = await fetch('/current_poll');
+    if (response.ok) {
+        const data = await response.json();
+        displayPoll(data);
+    } else {
+        document.getElementById('poll').innerHTML = '<p>No active poll.</p>';
+        document.getElementById('results').innerHTML = '';
+    }
+    // Hide the loading spinner after the poll is loaded
+    document.getElementById('loading-spinner').style.display = 'none';
+}
         function displayPoll(data) {
             const pollContainer = document.getElementById('poll');
             pollContainer.innerHTML = `
@@ -120,9 +121,6 @@ async function vote(optionId) {
             body: JSON.stringify({ option_id: optionId })
         });
 
-        // Hide loading spinner
-        document.getElementById('loading-spinner').style.display = 'none';
-
         if (response.ok) {
             alert('Vote submitted!');
         } else {
@@ -138,6 +136,8 @@ async function vote(optionId) {
         console.error(err);
         alert('Network error while submitting vote.');
     } finally {
+        // Hide loading spinner after the process is done
+        document.getElementById('loading-spinner').style.display = 'none';
         // Enable buttons again after the process is done
         buttons.forEach(button => button.disabled = false);
     }
