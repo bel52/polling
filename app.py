@@ -359,10 +359,6 @@ def delete_staged_poll(poll_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-if __name__ == '__main__':
-    # Make sure to use `socketio.run` instead of `app.run`
-    socketio.run(app, host='0.0.0.0', port=5000)
-
 @app.route('/clear_poll', methods=['POST'])
 def clear_poll():
     try:
@@ -373,22 +369,32 @@ def clear_poll():
         c.execute("SELECT * FROM questions ORDER BY id DESC LIMIT 1")
         current_poll = c.fetchone()
         if current_poll:
+            print(f"Current poll: {current_poll}")  # Debugging statement
             # Get options and votes for the current poll
             c.execute("SELECT option, votes FROM options WHERE question_id = ?", (current_poll[0],))
             current_options = [{"option": row[0], "votes": row[1]} for row in c.fetchall()]
+            print(f"Current options: {current_options}")  # Debugging statement
             # Archive the poll
             c.execute("INSERT INTO archived_polls (question, options) VALUES (?, ?)", 
                       (current_poll[1], json.dumps(current_options)))
+            print("Poll archived")  # Debugging statement
             # Remove the current poll
             c.execute("DELETE FROM questions WHERE id = ?", (current_poll[0],))
             c.execute("DELETE FROM options WHERE question_id = ?", (current_poll[0],))
+            print("Poll removed from current polls")  # Debugging statement
 
         conn.commit()
         conn.close()
 
         # Emit an event to notify clients that the poll has been cleared
         socketio.emit('update_results', {"results": [], "voter": None})
+        print("Event emitted to clients")  # Debugging statement
 
         return jsonify({"success": True}), 200
     except Exception as e:
+        print(f"Error clearing poll: {e}")  # More detailed error logging
         return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    # Make sure to use `socketio.run` instead of `app.run`
+    socketio.run(app, host='0.0.0.0', port=5000)
