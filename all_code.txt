@@ -1,0 +1,1179 @@
+--- Start of ./code_extract.py ---
+import os
+
+def extract_code(directory, output_file):
+    """
+    Recursively extracts code from all files in a directory and sub-directories,
+    excluding database files (.db), and writes it to a .txt file.
+    """
+    with open(output_file, 'w', encoding='utf-8') as out_file:
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                # Skip database files or other binary-like files
+                if file.endswith('.db'):
+                    continue
+                
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        out_file.write(f"--- Start of {file_path} ---\n")
+                        out_file.write(f.read())
+                        out_file.write(f"\n--- End of {file_path} ---\n\n")
+                except Exception as e:
+                    print(f"Error reading file {file_path}: {e}")
+
+if __name__ == "__main__":
+    # Specify the directory to scan and the output file
+    directory_to_scan = '.'  # Current directory
+    output_file_name = 'all_code.txt'
+    
+    extract_code(directory_to_scan, output_file_name)
+    print(f"Code from all files (excluding .db) has been saved to {output_file_name}")
+
+--- End of ./code_extract.py ---
+
+--- Start of ./requirements.txt ---
+flask==2.1.3
+flask-socketio==5.3.2
+werkzeug==2.0.3
+eventlet==0.33.0
+dnspython==2.2.1
+python-socketio==5.8.0
+
+--- End of ./requirements.txt ---
+
+--- Start of ./Dockerfile ---
+FROM python:3.9-slim
+
+WORKDIR /app
+
+COPY requirements.txt requirements.txt
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+
+--- End of ./Dockerfile ---
+
+--- Start of ./app.py ---
+from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO, emit
+import sqlite3
+import os
+import json
+
+# Initialize Flask App
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Database setup
+def init_db():
+    if not os.path.exists('poll.db'):
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        # Create questions table
+        c.execute('''CREATE TABLE questions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        question TEXT NOT NULL
+                    )''')
+        # Create options table
+        c.execute('''CREATE TABLE options (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        question_id INTEGER NOT NULL,
+                        option TEXT NOT NULL,
+                        votes INTEGER DEFAULT 0
+                    )''')
+        # Create archived_polls table
+        c.execute('''CREATE TABLE archived_polls (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        question TEXT NOT NULL,
+                        options TEXT NOT NULL -- JSON string of options and votes
+                    )''')
+        # Create staged_polls table
+        c.execute('''CREATE TABLE staged_polls (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        question TEXT NOT NULL,
+                        options TEXT NOT NULL -- JSON string of options
+                    )''')
+        conn.commit()
+        conn.close()
+
+# Initialize database
+init_db()
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/professor')
+def professor():
+    return render_template('professor.html')
+
+@app.route('/create_poll', methods=['POST'])
+def create_poll():
+    data = request.json
+    question = data.get('question')
+    options = data.get('options')
+
+    if not question or not options:
+        return jsonify({"error": "Invalid input"}), 400
+
+    conn = sqlite3.connect('poll.db')
+    c = conn.cursor()
+
+    # Archive the current poll
+    c.execute("SELECT * FROM questions ORDER BY id DESC LIMIT 1")
+    current_poll = c.fetchone()
+    if current_poll:
+        # Get options and votes for the current poll
+        c.execute("SELECT option, votes FROM options WHERE question_id = ?", (current_poll[0],))
+        current_options = [{"option": row[0], "votes": row[1]} for row in c.fetchall()]
+        # Archive the poll
+        c.execute("INSERT INTO archived_polls (question, options) VALUES (?, ?)", 
+                  (current_poll[1], json.dumps(current_options)))
+        # Remove the current poll
+        c.execute("DELETE FROM questions WHERE id = ?", (current_poll[0],))
+        c.execute("DELETE FROM options WHERE question_id = ?", (current_poll[0],))
+
+    # Create the new poll
+    c.execute("INSERT INTO questions (question) VALUES (?)", (question,))
+    question_id = c.lastrowid
+    for option in options:
+        c.execute("INSERT INTO options (question_id, option) VALUES (?, ?)", (question_id, option))
+
+    conn.commit()
+    conn.close()
+
+    # Notify clients of the new poll
+    socketio.emit('new_poll', {"question": question, "options": options, "id": question_id})
+
+    return jsonify({"success": True}), 200
+
+@app.route('/vote', methods=['POST'])
+def vote():
+    data = request.json
+    option_id = data.get('option_id')
+
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+
+        # Validate that the option belongs to the current poll
+        c.execute("""
+            SELECT questions.id FROM questions
+            JOIN options ON questions.id = options.question_id
+            WHERE options.id = ?
+        """, (option_id,))
+        current_poll_id = c.fetchone()
+
+        # Get the current active poll ID
+        c.execute("SELECT id FROM questions ORDER BY id DESC LIMIT 1")
+        active_poll_id = c.fetchone()
+
+        if not current_poll_id or not active_poll_id or current_poll_id[0] != active_poll_id[0]:
+            conn.close()
+            return jsonify({
+                "error": "Stale poll. You are voting on an old poll. The page will refresh to show the current poll."
+            }), 400
+
+        # Increment vote count
+        c.execute("UPDATE options SET votes = votes + 1 WHERE id = ?", (option_id,))
+
+        # Fetch updated results
+        c.execute("""
+            SELECT id, option, votes 
+            FROM options 
+            WHERE question_id = (SELECT question_id FROM options WHERE id = ?)
+        """, (option_id,))
+        results = [{"id": row[0], "option": row[1], "votes": row[2]} for row in c.fetchall()]
+
+        conn.commit()
+        conn.close()
+
+        # Emit the results to all clients
+        socketio.emit('update_results', {"results": results})
+
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/current_poll', methods=['GET'])
+def current_poll():
+    conn = sqlite3.connect('poll.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM questions ORDER BY id DESC LIMIT 1")
+    question = c.fetchone()
+
+    if question:
+        c.execute("SELECT id, option, votes FROM options WHERE question_id = ?", (question[0],))
+        options = [{"id": row[0], "option": row[1], "votes": row[2]} for row in c.fetchall()]
+        conn.close()
+        return jsonify({"id": question[0], "question": question[1], "options": options}), 200
+    else:
+        conn.close()
+        return jsonify({"message": "No active poll"}), 404
+
+@app.route('/archived_polls', methods=['GET'])
+def get_archived_polls():
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("SELECT id, question, options FROM archived_polls")
+        archived_polls = [{"id": row[0], "question": row[1], "options": row[2]} for row in c.fetchall()]
+        conn.close()
+        return jsonify(archived_polls), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/delete_poll/<int:poll_id>', methods=['DELETE'])
+def delete_poll(poll_id):
+    try:
+        print(f"Received request to delete poll with ID: {poll_id}")
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        # Delete the archived poll
+        c.execute("DELETE FROM archived_polls WHERE id = ?", (poll_id,))
+        conn.commit()
+        conn.close()
+        print(f"Successfully deleted poll with ID: {poll_id}")
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        print(f"Error deleting poll: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/stage_poll', methods=['POST'])
+def create_staged_poll():
+    """Create a staged poll."""
+    data = request.json
+    question = data.get('question')
+    options = data.get('options')
+
+    if not question or not options:
+        return jsonify({"error": "Invalid input"}), 400
+
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO staged_polls (question, options) VALUES (?, ?)", 
+                  (question, json.dumps(options)))
+        conn.commit()
+        print(f"Staged Poll Added: {question}, {options}")  # Debugging statement
+        conn.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        print(f"Error staging poll: {e}")  # Debugging statement
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/staged_polls', methods=['GET'])
+def get_staged_polls():
+    """Fetch all staged polls."""
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("SELECT id, question, options FROM staged_polls")
+        rows = c.fetchall()  # Fetch rows
+        print("Fetched Rows:", rows)  # Debugging statement
+        staged_polls = [{"id": row[0], "question": row[1], "options": row[2]} for row in rows]
+        conn.close()
+        return jsonify(staged_polls), 200
+    except Exception as e:
+        print("Error fetching staged polls:", e)  # Debugging statement
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/publish_staged_poll/<int:poll_id>', methods=['POST'])
+def publish_staged_poll(poll_id):
+    """Publish a staged poll."""
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+
+        # Archive the current active poll
+        c.execute("SELECT * FROM questions ORDER BY id DESC LIMIT 1")
+        current_poll = c.fetchone()
+        if current_poll:
+            # Get options and votes for the current poll
+            c.execute("SELECT option, votes FROM options WHERE question_id = ?", (current_poll[0],))
+            current_options = [{"option": row[0], "votes": row[1]} for row in c.fetchall()]
+            # Archive the poll
+            c.execute("INSERT INTO archived_polls (question, options) VALUES (?, ?)",
+                      (current_poll[1], json.dumps(current_options)))
+            # Remove the current poll
+            c.execute("DELETE FROM questions WHERE id = ?", (current_poll[0],))
+            c.execute("DELETE FROM options WHERE question_id = ?", (current_poll[0],))
+
+        # Fetch the staged poll
+        c.execute("SELECT question, options FROM staged_polls WHERE id = ?", (poll_id,))
+        poll = c.fetchone()
+        if not poll:
+            return jsonify({"error": "Poll not found"}), 404
+
+        question, options = poll[0], json.loads(poll[1])
+
+        # Publish the staged poll as active
+        c.execute("INSERT INTO questions (question) VALUES (?)", (question,))
+        question_id = c.lastrowid
+        for option in options:
+            c.execute("INSERT INTO options (question_id, option) VALUES (?, ?)", (question_id, option))
+
+        # Remove the staged poll
+        c.execute("DELETE FROM staged_polls WHERE id = ?", (poll_id,))
+
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/edit_staged_poll/<int:poll_id>', methods=['PUT'])
+def edit_staged_poll(poll_id):
+    """Edit a staged poll."""
+    data = request.json
+    question = data.get('question')
+    options = data.get('options')
+
+    if not question or not options:
+        return jsonify({"error": "Invalid input"}), 400
+
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("UPDATE staged_polls SET question = ?, options = ? WHERE id = ?", 
+                  (question, json.dumps(options), poll_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/delete_staged_poll/<int:poll_id>', methods=['DELETE'])
+def delete_staged_poll(poll_id):
+    """Delete a staged poll."""
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+
+        # Check if the poll exists
+        c.execute("SELECT COUNT(*) FROM staged_polls WHERE id = ?", (poll_id,))
+        if c.fetchone()[0] == 0:
+            conn.close()
+            return jsonify({"error": "Poll not found"}), 404
+
+        # Delete the poll
+        c.execute("DELETE FROM staged_polls WHERE id = ?", (poll_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    # Make sure to use `socketio.run` instead of `app.run`
+    socketio.run(app, host='0.0.0.0', port=5000)
+
+--- End of ./app.py ---
+
+--- Start of ./docker-compose.yml ---
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    environment:
+      - FLASK_ENV=production
+
+--- End of ./docker-compose.yml ---
+
+--- Start of ./all_code.txt ---
+--- Start of ./code_extract.py ---
+import os
+
+def extract_code(directory, output_file):
+    """
+    Recursively extracts code from all files in a directory and sub-directories,
+    excluding database files (.db), and writes it to a .txt file.
+    """
+    with open(output_file, 'w', encoding='utf-8') as out_file:
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                # Skip database files or other binary-like files
+                if file.endswith('.db'):
+                    continue
+                
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        out_file.write(f"--- Start of {file_path} ---\n")
+                        out_file.write(f.read())
+                        out_file.write(f"\n--- End of {file_path} ---\n\n")
+                except Exception as e:
+                    print(f"Error reading file {file_path}: {e}")
+
+if __name__ == "__main__":
+    # Specify the directory to scan and the output file
+    directory_to_scan = '.'  # Current directory
+    output_file_name = 'all_code.txt'
+    
+    extract_code(directory_to_scan, output_file_name)
+    print(f"Code from all files (excluding .db) has been saved to {output_file_name}")
+
+--- End of ./code_extract.py ---
+
+--- Start of ./requirements.txt ---
+flask==2.1.3
+flask-socketio==5.3.2
+werkzeug==2.0.3
+eventlet==0.33.0
+dnspython==2.2.1
+python-socketio==5.8.0
+
+--- End of ./requirements.txt ---
+
+--- Start of ./Dockerfile ---
+FROM python:3.9-slim
+
+WORKDIR /app
+
+COPY requirements.txt requirements.txt
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+
+--- End of ./Dockerfile ---
+
+--- Start of ./app.py ---
+from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO, emit
+import sqlite3
+import os
+import json
+
+# Initialize Flask App
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Database setup
+def init_db():
+    if not os.path.exists('poll.db'):
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        # Create questions table
+        c.execute('''CREATE TABLE questions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        question TEXT NOT NULL
+                    )''')
+        # Create options table
+        c.execute('''CREATE TABLE options (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        question_id INTEGER NOT NULL,
+                        option TEXT NOT NULL,
+                        votes INTEGER DEFAULT 0
+                    )''')
+        # Create archived_polls table
+        c.execute('''CREATE TABLE archived_polls (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        question TEXT NOT NULL,
+                        options TEXT NOT NULL -- JSON string of options and votes
+                    )''')
+        # Create staged_polls table
+        c.execute('''CREATE TABLE staged_polls (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        question TEXT NOT NULL,
+                        options TEXT NOT NULL -- JSON string of options
+                    )''')
+        conn.commit()
+        conn.close()
+
+# Initialize database
+init_db()
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/professor')
+def professor():
+    return render_template('professor.html')
+
+@app.route('/create_poll', methods=['POST'])
+def create_poll():
+    data = request.json
+    question = data.get('question')
+    options = data.get('options')
+
+    if not question or not options:
+        return jsonify({"error": "Invalid input"}), 400
+
+    conn = sqlite3.connect('poll.db')
+    c = conn.cursor()
+
+    # Archive the current poll
+    c.execute("SELECT * FROM questions ORDER BY id DESC LIMIT 1")
+    current_poll = c.fetchone()
+    if current_poll:
+        # Get options and votes for the current poll
+        c.execute("SELECT option, votes FROM options WHERE question_id = ?", (current_poll[0],))
+        current_options = [{"option": row[0], "votes": row[1]} for row in c.fetchall()]
+        # Archive the poll
+        c.execute("INSERT INTO archived_polls (question, options) VALUES (?, ?)", 
+                  (current_poll[1], json.dumps(current_options)))
+        # Remove the current poll
+        c.execute("DELETE FROM questions WHERE id = ?", (current_poll[0],))
+        c.execute("DELETE FROM options WHERE question_id = ?", (current_poll[0],))
+
+    # Create the new poll
+    c.execute("INSERT INTO questions (question) VALUES (?)", (question,))
+    question_id = c.lastrowid
+    for option in options:
+        c.execute("INSERT INTO options (question_id, option) VALUES (?, ?)", (question_id, option))
+
+    conn.commit()
+    conn.close()
+
+    # Notify clients of the new poll
+    socketio.emit('new_poll', {"question": question, "options": options, "id": question_id})
+
+    return jsonify({"success": True}), 200
+
+@app.route('/vote', methods=['POST'])
+def vote():
+    data = request.json
+    option_id = data.get('option_id')
+
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+
+        # Validate that the option belongs to the current poll
+        c.execute("""
+            SELECT questions.id FROM questions
+            JOIN options ON questions.id = options.question_id
+            WHERE options.id = ?
+        """, (option_id,))
+        current_poll_id = c.fetchone()
+
+        # Get the current active poll ID
+        c.execute("SELECT id FROM questions ORDER BY id DESC LIMIT 1")
+        active_poll_id = c.fetchone()
+
+        if not current_poll_id or not active_poll_id or current_poll_id[0] != active_poll_id[0]:
+            conn.close()
+            return jsonify({
+                "error": "Stale poll. You are voting on an old poll. The page will refresh to show the current poll."
+            }), 400
+
+        # Increment vote count
+        c.execute("UPDATE options SET votes = votes + 1 WHERE id = ?", (option_id,))
+
+        # Fetch updated results
+        c.execute("""
+            SELECT id, option, votes 
+            FROM options 
+            WHERE question_id = (SELECT question_id FROM options WHERE id = ?)
+        """, (option_id,))
+        results = [{"id": row[0], "option": row[1], "votes": row[2]} for row in c.fetchall()]
+
+        conn.commit()
+        conn.close()
+
+        # Emit the results to all clients
+        socketio.emit('update_results', {"results": results})
+
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/current_poll', methods=['GET'])
+def current_poll():
+    conn = sqlite3.connect('poll.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM questions ORDER BY id DESC LIMIT 1")
+    question = c.fetchone()
+
+    if question:
+        c.execute("SELECT id, option, votes FROM options WHERE question_id = ?", (question[0],))
+        options = [{"id": row[0], "option": row[1], "votes": row[2]} for row in c.fetchall()]
+        conn.close()
+        return jsonify({"id": question[0], "question": question[1], "options": options}), 200
+    else:
+        conn.close()
+        return jsonify({"message": "No active poll"}), 404
+
+@app.route('/archived_polls', methods=['GET'])
+def get_archived_polls():
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("SELECT id, question, options FROM archived_polls")
+        archived_polls = [{"id": row[0], "question": row[1], "options": row[2]} for row in c.fetchall()]
+        conn.close()
+        return jsonify(archived_polls), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/delete_poll/<int:poll_id>', methods=['DELETE'])
+def delete_poll(poll_id):
+    try:
+        print(f"Received request to delete poll with ID: {poll_id}")
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        # Delete the archived poll
+        c.execute("DELETE FROM archived_polls WHERE id = ?", (poll_id,))
+        conn.commit()
+        conn.close()
+        print(f"Successfully deleted poll with ID: {poll_id}")
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        print(f"Error deleting poll: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/stage_poll', methods=['POST'])
+def create_staged_poll():
+    """Create a staged poll."""
+    data = request.json
+    question = data.get('question')
+    options = data.get('options')
+
+    if not question or not options:
+        return jsonify({"error": "Invalid input"}), 400
+
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO staged_polls (question, options) VALUES (?, ?)", 
+                  (question, json.dumps(options)))
+        conn.commit()
+        print(f"Staged Poll Added: {question}, {options}")  # Debugging statement
+        conn.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        print(f"Error staging poll: {e}")  # Debugging statement
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/staged_polls', methods=['GET'])
+def get_staged_polls():
+    """Fetch all staged polls."""
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("SELECT id, question, options FROM staged_polls")
+        rows = c.fetchall()  # Fetch rows
+        print("Fetched Rows:", rows)  # Debugging statement
+        staged_polls = [{"id": row[0], "question": row[1], "options": row[2]} for row in rows]
+        conn.close()
+        return jsonify(staged_polls), 200
+    except Exception as e:
+        print("Error fetching staged polls:", e)  # Debugging statement
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/publish_staged_poll/<int:poll_id>', methods=['POST'])
+def publish_staged_poll(poll_id):
+    """Publish a staged poll."""
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+
+        # Archive the current active poll
+        c.execute("SELECT * FROM questions ORDER BY id DESC LIMIT 1")
+        current_poll = c.fetchone()
+        if current_poll:
+            # Get options and votes for the current poll
+            c.execute("SELECT option, votes FROM options WHERE question_id = ?", (current_poll[0],))
+            current_options = [{"option": row[0], "votes": row[1]} for row in c.fetchall()]
+            # Archive the poll
+            c.execute("INSERT INTO archived_polls (question, options) VALUES (?, ?)",
+                      (current_poll[1], json.dumps(current_options)))
+            # Remove the current poll
+            c.execute("DELETE FROM questions WHERE id = ?", (current_poll[0],))
+            c.execute("DELETE FROM options WHERE question_id = ?", (current_poll[0],))
+
+        # Fetch the staged poll
+        c.execute("SELECT question, options FROM staged_polls WHERE id = ?", (poll_id,))
+        poll = c.fetchone()
+        if not poll:
+            return jsonify({"error": "Poll not found"}), 404
+
+        question, options = poll[0], json.loads(poll[1])
+
+        # Publish the staged poll as active
+        c.execute("INSERT INTO questions (question) VALUES (?)", (question,))
+        question_id = c.lastrowid
+        for option in options:
+            c.execute("INSERT INTO options (question_id, option) VALUES (?, ?)", (question_id, option))
+
+        # Remove the staged poll
+        c.execute("DELETE FROM staged_polls WHERE id = ?", (poll_id,))
+
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/edit_staged_poll/<int:poll_id>', methods=['PUT'])
+def edit_staged_poll(poll_id):
+    """Edit a staged poll."""
+    data = request.json
+    question = data.get('question')
+    options = data.get('options')
+
+    if not question or not options:
+        return jsonify({"error": "Invalid input"}), 400
+
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+        c.execute("UPDATE staged_polls SET question = ?, options = ? WHERE id = ?", 
+                  (question, json.dumps(options), poll_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/delete_staged_poll/<int:poll_id>', methods=['DELETE'])
+def delete_staged_poll(poll_id):
+    """Delete a staged poll."""
+    try:
+        conn = sqlite3.connect('poll.db')
+        c = conn.cursor()
+
+        # Check if the poll exists
+        c.execute("SELECT COUNT(*) FROM staged_polls WHERE id = ?", (poll_id,))
+        if c.fetchone()[0] == 0:
+            conn.close()
+            return jsonify({"error": "Poll not found"}), 404
+
+        # Delete the poll
+        c.execute("DELETE FROM staged_polls WHERE id = ?", (poll_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    # Make sure to use `socketio.run` instead of `app.run`
+    socketio.run(app, host='0.0.0.0', port=5000)
+
+--- End of ./all_code.txt ---
+
+--- Start of ./templates/professor.html ---
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Georgetown SFS | Cyber Operations | Professor Dashboard</title>
+    <script>
+async function createPoll() {
+    const question = document.getElementById('question').value;
+    const options = document.getElementById('options').value.split(',');
+
+    const response = await fetch('/create_poll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, options })
+    });
+
+    if (response.ok) {
+        alert('Poll created!');
+        loadResults();
+        loadArchivedPolls();
+        // Clear the input fields
+        document.getElementById('question').value = '';
+        document.getElementById('options').value = '';
+    } else {
+        alert('Error creating poll.');
+    }
+}
+
+async function stagePoll() {
+    const question = document.getElementById('question').value;
+    const options = document.getElementById('options').value.split(',');
+
+    const response = await fetch('/stage_poll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, options })
+    });
+
+    if (response.ok) {
+        alert('Poll staged!');
+        loadStagedPolls();
+        // Clear the input fields
+        document.getElementById('question').value = '';
+        document.getElementById('options').value = '';
+    } else {
+        alert('Error staging poll.');
+    }
+}
+
+        async function loadResults() {
+            const response = await fetch('/current_poll');
+            if (response.ok) {
+                const data = await response.json();
+                const resultsContainer = document.getElementById('results');
+                resultsContainer.innerHTML = `
+                    <h3>${data.question}</h3>
+                    ${data.options.map(option => `
+                        <p>${option.option}: ${option.votes} votes</p>
+                    `).join('')}
+                `;
+            } else {
+                document.getElementById('results').innerHTML = '<p>No active poll.</p>';
+            }
+        }
+
+        async function loadArchivedPolls() {
+            const response = await fetch('/archived_polls');
+            if (response.ok) {
+                const archivedPolls = await response.json();
+                const archivedContainer = document.getElementById('archived');
+                if (archivedPolls.length === 0) {
+                    archivedContainer.innerHTML = '<p>No archived polls.</p>';
+                    return;
+                }
+                archivedContainer.innerHTML = archivedPolls.map(poll => `
+                    <div>
+                        <h3>${poll.question}</h3>
+                        <ul>
+                            ${JSON.parse(poll.options).map(option => `
+                                <li>${option.option}: ${option.votes} votes</li>
+                            `).join('')}
+                        </ul>
+                        <button onclick="deleteArchivedPoll(${poll.id})">Delete</button>
+                    </div>
+                `).join('');
+            } else {
+                document.getElementById('archived').innerHTML = '<p>Error loading archived polls.</p>';
+            }
+        }
+
+        async function loadStagedPolls() {
+            const response = await fetch('/staged_polls');
+            if (response.ok) {
+                const stagedPolls = await response.json();
+                const stagedContainer = document.getElementById('staged');
+                if (stagedPolls.length === 0) {
+                    stagedContainer.innerHTML = '<p>No staged polls.</p>';
+                    return;
+                }
+                stagedContainer.innerHTML = stagedPolls.map(poll => `
+                    <div>
+                        <h3>${poll.question}</h3>
+                        <ul>
+                            ${JSON.parse(poll.options).map(option => `
+                                <li>${option}</li>
+                            `).join('')}
+                        </ul>
+                        <button onclick="publishStagedPoll(${poll.id})">Publish</button>
+                        <button onclick="editStagedPoll(${poll.id})">Edit</button>
+                        <button onclick="deleteStagedPoll(${poll.id})">Delete</button>
+                    </div>
+                `).join('');
+            } else {
+                document.getElementById('staged').innerHTML = '<p>Error loading staged polls.</p>';
+            }
+        }
+
+        async function publishStagedPoll(pollId) {
+            const response = await fetch(`/publish_staged_poll/${pollId}`, { method: 'POST' });
+            if (response.ok) {
+                alert('Poll published!');
+                loadStagedPolls();
+                loadResults();
+            } else {
+                alert('Error publishing poll.');
+            }
+        }
+
+async function deleteStagedPoll(pollId) {
+    console.log(`Deleting staged poll with ID: ${pollId}`); // Debugging
+    const response = await fetch(`/delete_staged_poll/${pollId}`, { method: 'DELETE' });
+    if (response.ok) {
+        alert('Poll deleted!');
+        loadStagedPolls();
+    } else {
+        const errorMessage = await response.text();
+        console.error(`Error deleting staged poll: ${errorMessage}`); // Debugging
+        alert(`Error deleting poll: ${errorMessage}`);
+    }
+}
+
+        window.onload = function () {
+            loadResults();
+            loadArchivedPolls();
+            loadStagedPolls();
+        };
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+        }
+
+        header {
+            background-color: #2b2b2b;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            font-size: 1.5rem;
+        }
+
+        main {
+            width: 90%;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        h1, h2 {
+            color: #333;
+        }
+
+        label {
+            font-weight: bold;
+            display: block;
+            margin: 10px 0 5px;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <header>Georgetown SFS | Cyber Operations | Professor Dashboard</header>
+    <main>
+        <h1>Create a Poll</h1>
+        <label for="question">Poll Question</label>
+        <input id="question" placeholder="Enter poll question" />
+        <label for="options">Options (comma-separated)</label>
+        <input id="options" placeholder="Enter poll options" />
+        <button onclick="createPoll()">Create Poll</button>
+        <button onclick="stagePoll()">Stage Poll</button>
+
+        <h2>Current Poll Results</h2>
+        <div id="results"><p>Loading...</p></div>
+
+        <h2>Staged Polls</h2>
+        <div id="staged"><p>Loading...</p></div>
+
+        <h2>Archived Polls</h2>
+        <div id="archived"><p>Loading...</p></div>
+    </main>
+</body>
+</html>
+
+--- End of ./templates/professor.html ---
+
+--- Start of ./templates/index.html ---
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Georgetown SFS | Cyber Operations | Student Polling</title>
+    <script src="https://cdn.socket.io/4.5.3/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        header {
+            background-color: #2b2b2b;
+            color: white;
+            width: 100%;
+            padding: 20px;
+            text-align: center;
+            font-size: 1.5rem;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        main {
+            margin-top: 100px; /* Ensure content starts below the fixed header */
+            width: 90%;
+            max-width: 600px;
+            text-align: center;
+            padding: 20px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            border-radius: 10px;
+            background-color: white;
+        }
+
+        h2 {
+            color: #333;
+            font-size: 1.5rem;
+        }
+
+        h3 {
+            font-size: 1.5rem;
+            color: #000;
+            margin-top: 20px;
+        }
+
+        button {
+            display: block;
+            width: 100%;
+            margin: 10px 0;
+            padding: 15px;
+            font-size: 1rem;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        .result-bar {
+            background-color: lightgray;
+            height: 20px;
+            position: relative;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+
+        .result-bar-inner {
+            background-color: #007bff;
+            height: 100%;
+            border-radius: 5px;
+        }
+    </style>
+    <script>
+        const socket = io();
+
+        async function loadPoll() {
+            const response = await fetch('/current_poll');
+            if (response.ok) {
+                const data = await response.json();
+                displayPoll(data);
+            } else {
+                document.getElementById('poll').innerHTML = '<p>No active poll.</p>';
+                document.getElementById('results').innerHTML = '';
+            }
+        }
+
+        function displayPoll(data) {
+            const pollContainer = document.getElementById('poll');
+            pollContainer.innerHTML = `
+                <h2>${data.question}</h2>
+                ${data.options.map(option => `
+                    <button onclick="vote(${option.id})">${option.option}</button>
+                `).join('')}
+            `;
+
+            updateResults(data.options);
+        }
+    async function vote(optionId) {
+        try {
+            const response = await fetch('/vote', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ option_id: optionId })
+            });
+
+            if (response.ok) {
+                alert('Vote submitted!');
+            } else {
+                const result = await response.json();
+                if (result.error.includes("Stale poll")) {
+                    alert(result.error);
+                    location.reload(); // Refresh the page to show the current poll
+                } else {
+                    alert('Error submitting vote: ' + result.error);
+                }
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Network error while submitting vote.');
+        }
+    }
+
+    function updateResults(options) {
+        const resultsContainer = document.getElementById('results');
+        const totalVotes = options.reduce((sum, option) => sum + option.votes, 0);
+
+        resultsContainer.innerHTML = `
+            <h3>Live Results</h3>
+            ${options.map(option => `
+                <div>
+                    <span>${option.option}: ${option.votes} votes</span>
+                    <div class="result-bar">
+                        <div class="result-bar-inner" style="width: ${(totalVotes > 0 ? (option.votes / totalVotes) * 100 : 0)}%;"></div>
+                    </div>
+                </div>
+            `).join('')}
+        `;
+    }
+
+    socket.on('update_results', (data) => {
+        if (data.results) {
+            updateResults(data.results);
+        }
+    });
+        // Auto-refresh the page every 5 minutes
+        setInterval(() => {
+            location.reload();
+        }, 5 * 60 * 1000);
+
+        window.onload = loadPoll;
+    </script>
+</head>
+<body>
+    <header>Georgetown SFS | Cyber Operations | Student Polling</header>
+    <main>
+        <div id="poll"><p>Loading...</p></div>
+        <div id="results"></div>
+    </main>
+</body>
+</html>
+
+--- End of ./templates/index.html ---
+

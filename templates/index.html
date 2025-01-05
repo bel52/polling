@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Georgetown SFS | Cyber Operations | Student Polling</title>
+    <script src="https://cdn.socket.io/4.5.3/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        header {
+            background-color: #2b2b2b;
+            color: white;
+            width: 100%;
+            padding: 20px;
+            text-align: center;
+            font-size: 1.5rem;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        main {
+            margin-top: 100px; /* Ensure content starts below the fixed header */
+            width: 90%;
+            max-width: 600px;
+            text-align: center;
+            padding: 20px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            border-radius: 10px;
+            background-color: white;
+        }
+
+        h2 {
+            color: #333;
+            font-size: 1.5rem;
+        }
+
+        h3 {
+            font-size: 1.5rem;
+            color: #000;
+            margin-top: 20px;
+        }
+
+        button {
+            display: block;
+            width: 100%;
+            margin: 10px 0;
+            padding: 15px;
+            font-size: 1rem;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        .result-bar {
+            background-color: lightgray;
+            height: 20px;
+            position: relative;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+
+        .result-bar-inner {
+            background-color: #007bff;
+            height: 100%;
+            border-radius: 5px;
+        }
+    </style>
+    <script>
+        const socket = io();
+
+        async function loadPoll() {
+            const response = await fetch('/current_poll');
+            if (response.ok) {
+                const data = await response.json();
+                displayPoll(data);
+            } else {
+                document.getElementById('poll').innerHTML = '<p>No active poll.</p>';
+                document.getElementById('results').innerHTML = '';
+            }
+        }
+
+        function displayPoll(data) {
+            const pollContainer = document.getElementById('poll');
+            pollContainer.innerHTML = `
+                <h2>${data.question}</h2>
+                ${data.options.map(option => `
+                    <button onclick="vote(${option.id})">${option.option}</button>
+                `).join('')}
+            `;
+
+            updateResults(data.options);
+        }
+    async function vote(optionId) {
+        try {
+            const response = await fetch('/vote', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ option_id: optionId })
+            });
+
+            if (response.ok) {
+                alert('Vote submitted!');
+            } else {
+                const result = await response.json();
+                if (result.error.includes("Stale poll")) {
+                    alert(result.error);
+                    location.reload(); // Refresh the page to show the current poll
+                } else {
+                    alert('Error submitting vote: ' + result.error);
+                }
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Network error while submitting vote.');
+        }
+    }
+
+    function updateResults(options) {
+        const resultsContainer = document.getElementById('results');
+        const totalVotes = options.reduce((sum, option) => sum + option.votes, 0);
+
+        resultsContainer.innerHTML = `
+            <h3>Live Results</h3>
+            ${options.map(option => `
+                <div>
+                    <span>${option.option}: ${option.votes} votes</span>
+                    <div class="result-bar">
+                        <div class="result-bar-inner" style="width: ${(totalVotes > 0 ? (option.votes / totalVotes) * 100 : 0)}%;"></div>
+                    </div>
+                </div>
+            `).join('')}
+        `;
+    }
+
+    socket.on('update_results', (data) => {
+        if (data.results) {
+            updateResults(data.results);
+        }
+    });
+        // Auto-refresh the page every 5 minutes
+        setInterval(() => {
+            location.reload();
+        }, 5 * 60 * 1000);
+
+        window.onload = loadPoll;
+    </script>
+</head>
+<body>
+    <header>Georgetown SFS | Cyber Operations | Student Polling</header>
+    <main>
+        <div id="poll"><p>Loading...</p></div>
+        <div id="results"></div>
+    </main>
+</body>
+</html>

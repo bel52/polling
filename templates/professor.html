@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Georgetown SFS | Cyber Operations | Professor Dashboard</title>
+    <script>
+async function createPoll() {
+    const question = document.getElementById('question').value;
+    const options = document.getElementById('options').value.split(',');
+
+    const response = await fetch('/create_poll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, options })
+    });
+
+    if (response.ok) {
+        alert('Poll created!');
+        loadResults();
+        loadArchivedPolls();
+        // Clear the input fields
+        document.getElementById('question').value = '';
+        document.getElementById('options').value = '';
+    } else {
+        alert('Error creating poll.');
+    }
+}
+
+async function stagePoll() {
+    const question = document.getElementById('question').value;
+    const options = document.getElementById('options').value.split(',');
+
+    const response = await fetch('/stage_poll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, options })
+    });
+
+    if (response.ok) {
+        alert('Poll staged!');
+        loadStagedPolls();
+        // Clear the input fields
+        document.getElementById('question').value = '';
+        document.getElementById('options').value = '';
+    } else {
+        alert('Error staging poll.');
+    }
+}
+
+        async function loadResults() {
+            const response = await fetch('/current_poll');
+            if (response.ok) {
+                const data = await response.json();
+                const resultsContainer = document.getElementById('results');
+                resultsContainer.innerHTML = `
+                    <h3>${data.question}</h3>
+                    ${data.options.map(option => `
+                        <p>${option.option}: ${option.votes} votes</p>
+                    `).join('')}
+                `;
+            } else {
+                document.getElementById('results').innerHTML = '<p>No active poll.</p>';
+            }
+        }
+
+        async function loadArchivedPolls() {
+            const response = await fetch('/archived_polls');
+            if (response.ok) {
+                const archivedPolls = await response.json();
+                const archivedContainer = document.getElementById('archived');
+                if (archivedPolls.length === 0) {
+                    archivedContainer.innerHTML = '<p>No archived polls.</p>';
+                    return;
+                }
+                archivedContainer.innerHTML = archivedPolls.map(poll => `
+                    <div>
+                        <h3>${poll.question}</h3>
+                        <ul>
+                            ${JSON.parse(poll.options).map(option => `
+                                <li>${option.option}: ${option.votes} votes</li>
+                            `).join('')}
+                        </ul>
+                        <button onclick="deleteArchivedPoll(${poll.id})">Delete</button>
+                    </div>
+                `).join('');
+            } else {
+                document.getElementById('archived').innerHTML = '<p>Error loading archived polls.</p>';
+            }
+        }
+
+        async function loadStagedPolls() {
+            const response = await fetch('/staged_polls');
+            if (response.ok) {
+                const stagedPolls = await response.json();
+                const stagedContainer = document.getElementById('staged');
+                if (stagedPolls.length === 0) {
+                    stagedContainer.innerHTML = '<p>No staged polls.</p>';
+                    return;
+                }
+                stagedContainer.innerHTML = stagedPolls.map(poll => `
+                    <div>
+                        <h3>${poll.question}</h3>
+                        <ul>
+                            ${JSON.parse(poll.options).map(option => `
+                                <li>${option}</li>
+                            `).join('')}
+                        </ul>
+                        <button onclick="publishStagedPoll(${poll.id})">Publish</button>
+                        <button onclick="editStagedPoll(${poll.id})">Edit</button>
+                        <button onclick="deleteStagedPoll(${poll.id})">Delete</button>
+                    </div>
+                `).join('');
+            } else {
+                document.getElementById('staged').innerHTML = '<p>Error loading staged polls.</p>';
+            }
+        }
+
+        async function publishStagedPoll(pollId) {
+            const response = await fetch(`/publish_staged_poll/${pollId}`, { method: 'POST' });
+            if (response.ok) {
+                alert('Poll published!');
+                loadStagedPolls();
+                loadResults();
+            } else {
+                alert('Error publishing poll.');
+            }
+        }
+
+async function deleteStagedPoll(pollId) {
+    console.log(`Deleting staged poll with ID: ${pollId}`); // Debugging
+    const response = await fetch(`/delete_staged_poll/${pollId}`, { method: 'DELETE' });
+    if (response.ok) {
+        alert('Poll deleted!');
+        loadStagedPolls();
+    } else {
+        const errorMessage = await response.text();
+        console.error(`Error deleting staged poll: ${errorMessage}`); // Debugging
+        alert(`Error deleting poll: ${errorMessage}`);
+    }
+}
+
+        window.onload = function () {
+            loadResults();
+            loadArchivedPolls();
+            loadStagedPolls();
+        };
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+        }
+
+        header {
+            background-color: #2b2b2b;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            font-size: 1.5rem;
+        }
+
+        main {
+            width: 90%;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        h1, h2 {
+            color: #333;
+        }
+
+        label {
+            font-weight: bold;
+            display: block;
+            margin: 10px 0 5px;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <header>Georgetown SFS | Cyber Operations | Professor Dashboard</header>
+    <main>
+        <h1>Create a Poll</h1>
+        <label for="question">Poll Question</label>
+        <input id="question" placeholder="Enter poll question" />
+        <label for="options">Options (comma-separated)</label>
+        <input id="options" placeholder="Enter poll options" />
+        <button onclick="createPoll()">Create Poll</button>
+        <button onclick="stagePoll()">Stage Poll</button>
+
+        <h2>Current Poll Results</h2>
+        <div id="results"><p>Loading...</p></div>
+
+        <h2>Staged Polls</h2>
+        <div id="staged"><p>Loading...</p></div>
+
+        <h2>Archived Polls</h2>
+        <div id="archived"><p>Loading...</p></div>
+    </main>
+</body>
+</html>
