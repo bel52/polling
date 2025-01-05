@@ -105,31 +105,43 @@
 
             updateResults(data.options);
         }
-    async function vote(optionId) {
-        try {
-            const response = await fetch('/vote', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ option_id: optionId })
-            });
+async function vote(optionId) {
+    // Disable all buttons after voting
+    const buttons = document.querySelectorAll('button');
+    buttons.forEach(button => button.disabled = true);
 
-            if (response.ok) {
-                alert('Vote submitted!');
+    // Show loading spinner
+    document.getElementById('loading-spinner').style.display = 'block';
+
+    try {
+        const response = await fetch('/vote', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ option_id: optionId })
+        });
+
+        // Hide loading spinner
+        document.getElementById('loading-spinner').style.display = 'none';
+
+        if (response.ok) {
+            alert('Vote submitted!');
+        } else {
+            const result = await response.json();
+            if (result.error.includes("Stale poll")) {
+                alert(result.error);
+                location.reload(); // Refresh the page to show the current poll
             } else {
-                const result = await response.json();
-                if (result.error.includes("Stale poll")) {
-                    alert(result.error);
-                    location.reload(); // Refresh the page to show the current poll
-                } else {
-                    alert('Error submitting vote: ' + result.error);
-                }
+                alert('Error submitting vote: ' + result.error);
             }
-        } catch (err) {
-            console.error(err);
-            alert('Network error while submitting vote.');
         }
+    } catch (err) {
+        console.error(err);
+        alert('Network error while submitting vote.');
+    } finally {
+        // Enable buttons again after the process is done
+        buttons.forEach(button => button.disabled = false);
     }
-
+}
     function updateResults(options) {
         const resultsContainer = document.getElementById('results');
         const totalVotes = options.reduce((sum, option) => sum + option.votes, 0);
@@ -165,6 +177,9 @@
     <main>
         <div id="poll"><p>Loading...</p></div>
         <div id="results"></div>
+        <div id="poll"><p>Loading...</p></div>
+        <div id="results"></div>
+        <div id="loading-spinner" style="display: none;">Submitting vote...</div>
     </main>
 </body>
 </html>

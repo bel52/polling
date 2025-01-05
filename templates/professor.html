@@ -45,7 +45,6 @@ async function stagePoll() {
         alert('Error staging poll.');
     }
 }
-
         async function loadResults() {
             const response = await fetch('/current_poll');
             if (response.ok) {
